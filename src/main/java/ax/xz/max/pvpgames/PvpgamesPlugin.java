@@ -6,7 +6,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-public final class Pvpgames extends JavaPlugin {
+public final class PvpgamesPlugin extends JavaPlugin {
 
 	@Override
 	public void onEnable() {
