@@ -80,9 +80,9 @@ public record InventorySnapshot(ItemStack[] storage, ItemStack[] armor, ItemStac
      */
     public void applyTo(PlayerInventory inventory) {
         Objects.requireNonNull(inventory, "inventory");
-        inventory.setStorageContents(deepClone(storage));
-        inventory.setArmorContents(deepClone(armor));
-        inventory.setItemInOffHand(offHand == null ? null : offHand.clone());
+        inventory.setStorageContents(this.storage());
+        inventory.setArmorContents(this.armor());
+        inventory.setItemInOffHand(this.offHand());
     }
 
     /**

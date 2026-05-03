@@ -46,11 +46,8 @@ public interface ServerHelper {
     boolean isPrimaryThread();
 
     /**
-     * Resolves a player {@link UUID} to the most recent known username, or
-     * {@link Optional#empty()} if the server has no record of that player.
-     *
-     * <p>Backed by Bukkit's offline-player cache; safe to call from the main
-     * thread.
+     * Resolves a player's {@link UUID} to their username.
+     * Only use this for displaying names; for persistent storage, use the UUID directly.
      */
     Optional<String> resolveOfflineName(UUID uuid);
 }
