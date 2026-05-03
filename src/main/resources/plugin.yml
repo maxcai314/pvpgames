@@ -40,3 +40,31 @@ permissions:
   pvpgames.kit.info:
     description: Show metadata (creator, creation date) for a saved kit.
     default: op
+  pvpgames.arena.admin:
+    description: Grants every arena-management subcommand. Convenient parent node.
+    default: op
+    children:
+      pvpgames.arena.create: true
+      pvpgames.arena.delete: true
+      pvpgames.arena.list: true
+      pvpgames.arena.info: true
+      pvpgames.arena.preview: true
+      pvpgames.arena.modify: true
+  pvpgames.arena.create:
+    description: Define a new arena referencing a schematic.
+    default: op
+  pvpgames.arena.delete:
+    description: Remove an arena's data file.
+    default: op
+  pvpgames.arena.list:
+    description: List all arena names.
+    default: op
+  pvpgames.arena.info:
+    description: Show arena metadata (schematic, spawn count, creator, created date).
+    default: op
+  pvpgames.arena.preview:
+    description: Open a preview void world and leave it via /arena leave.
+    default: op
+  pvpgames.arena.modify:
+    description: Add, list, visit, or remove spawn points in the previewed arena.
+    default: op

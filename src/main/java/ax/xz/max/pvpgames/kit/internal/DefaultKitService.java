@@ -1,5 +1,6 @@
 package ax.xz.max.pvpgames.kit.internal;
 
+import ax.xz.max.pvpgames.command.NameParseResult;
 import ax.xz.max.pvpgames.kit.InventorySnapshot;
 import ax.xz.max.pvpgames.kit.Kit;
 import ax.xz.max.pvpgames.kit.KitName;
@@ -37,11 +38,11 @@ public final class DefaultKitService implements KitService {
     public KitResult.CreateResult create(Player owner, String rawName) {
         Objects.requireNonNull(owner, "owner");
 
-        KitName.Result parsed = KitName.tryParse(rawName);
-        if (parsed instanceof KitName.Result.Invalid(String reason)) {
+        NameParseResult<KitName> parsed = KitName.tryParse(rawName);
+        if (parsed instanceof NameParseResult.Invalid<KitName>(String reason)) {
             return new KitResult.CreateResult.InvalidName(reason);
         }
-        KitName name = ((KitName.Result.Valid) parsed).name();
+        KitName name = ((NameParseResult.Valid<KitName>) parsed).name();
 
         InventorySnapshot snapshot = InventorySnapshot.captureFrom(owner);
         if (snapshot.isEmpty()) {
@@ -61,11 +62,11 @@ public final class DefaultKitService implements KitService {
     public KitResult.LoadResult load(Player target, String rawName) {
         Objects.requireNonNull(target, "target");
 
-        KitName.Result parsed = KitName.tryParse(rawName);
-        if (parsed instanceof KitName.Result.Invalid(String reason)) {
+        NameParseResult<KitName> parsed = KitName.tryParse(rawName);
+        if (parsed instanceof NameParseResult.Invalid<KitName>(String reason)) {
             return new KitResult.LoadResult.InvalidName(reason);
         }
-        KitName name = ((KitName.Result.Valid) parsed).name();
+        KitName name = ((NameParseResult.Valid<KitName>) parsed).name();
 
         Optional<Kit> kit = repository.find(name);
         if (kit.isEmpty()) {
@@ -79,11 +80,11 @@ public final class DefaultKitService implements KitService {
 
     @Override
     public KitResult.DeleteResult delete(String rawName) {
-        KitName.Result parsed = KitName.tryParse(rawName);
-        if (parsed instanceof KitName.Result.Invalid(String reason)) {
+        NameParseResult<KitName> parsed = KitName.tryParse(rawName);
+        if (parsed instanceof NameParseResult.Invalid<KitName>(String reason)) {
             return new KitResult.DeleteResult.InvalidName(reason);
         }
-        KitName name = ((KitName.Result.Valid) parsed).name();
+        KitName name = ((NameParseResult.Valid<KitName>) parsed).name();
 
         try {
             boolean existed = repository.delete(name);
@@ -105,9 +106,10 @@ public final class DefaultKitService implements KitService {
 
     @Override
     public Optional<Kit> find(String rawName) {
-        return switch (KitName.tryParse(rawName)) {
-            case KitName.Result.Valid v -> repository.find(v.name());
-            case KitName.Result.Invalid ignored -> Optional.empty();
-        };
+        NameParseResult<KitName> parsed = KitName.tryParse(rawName);
+        if (parsed instanceof NameParseResult.Valid<KitName>(KitName name)) {
+            return repository.find(name);
+        }
+        return Optional.empty();
     }
 }
