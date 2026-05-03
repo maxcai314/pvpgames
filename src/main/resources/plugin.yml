@@ -1,0 +1,8 @@
+name: pvpgames
+description: $description
+version: '${version}'
+
+main: ax.xz.max.pvpgames.Pvpgames
+paperPluginLoader: ax.xz.max.pvpgames.PvpgamesLoader
+api-version: '1.21.11'
+load: POSTWORLD
