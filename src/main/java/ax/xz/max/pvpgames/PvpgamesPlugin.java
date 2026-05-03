@@ -8,6 +8,7 @@ import ax.xz.max.pvpgames.kit.internal.FileKitRepository;
 import ax.xz.max.pvpgames.server.BukkitServerHelper;
 import ax.xz.max.pvpgames.server.ServerHelper;
 import org.bukkit.Server;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
@@ -42,12 +43,20 @@ public final class PvpgamesPlugin extends JavaPlugin {
             return;
         }
 
-        FileKitRepository fileKitRepository = new FileKitRepository(kitsDir, getSLF4JLogger());
-        fileKitRepository.loadAll();
-        this.kitRepository = fileKitRepository;
+        this.kitRepository = new FileKitRepository(kitsDir, getSLF4JLogger());
         this.kitService = new DefaultKitService(kitRepository, Clock.systemUTC());
 
+        // register the kit command
         new KitCommand(kitService, serverHelper).register(getLifecycleManager());
+
+        getSLF4JLogger().info("Checking for other plugins...");
+        PluginManager pm = getServer().getPluginManager();
+        if (pm.isPluginEnabled("WorldEdit")) {
+            getSLF4JLogger().info("Worldedit plugin found");
+        }
+        if (pm.isPluginEnabled("Multiverse-Core")) {
+            getSLF4JLogger().info("Multiverse plugin found");
+        }
 
         getSLF4JLogger().info("Pvpgames enabled with {} kit(s) loaded.", kitRepository.all().size());
     }

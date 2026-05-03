@@ -38,7 +38,7 @@ import java.util.concurrent.ConcurrentMap;
  * Minecraft version updates.
  *
  * <p>All kits are eager-loaded into a {@link ConcurrentHashMap} when
- * {@link #loadAll()} is called; subsequent reads hit the cache. Writes update
+ * {@link #loadAllFromFileSystem()} is called; subsequent reads hit the cache. Writes update
  * the cache and flush to disk atomically (write-temp + {@code ATOMIC_MOVE}).
  */
 public final class FileKitRepository implements KitRepository {
@@ -60,6 +60,8 @@ public final class FileKitRepository implements KitRepository {
     public FileKitRepository(Path kitsDir, Logger logger) {
         this.kitsDir = Objects.requireNonNull(kitsDir, "kitsDir");
         this.logger = Objects.requireNonNull(logger, "logger");
+
+        loadAllFromFileSystem();
     }
 
     /**
@@ -69,7 +71,7 @@ public final class FileKitRepository implements KitRepository {
      *
      * <p>Intended to be called once during plugin enable.
      */
-    public void loadAll() {
+    public void loadAllFromFileSystem() {
         cache.clear();
         if (!Files.isDirectory(kitsDir)) {
             logger.info("Kits directory {} does not exist yet; starting with no kits.", kitsDir);

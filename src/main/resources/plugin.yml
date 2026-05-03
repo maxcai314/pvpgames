@@ -7,6 +7,14 @@ paperPluginLoader: ax.xz.max.pvpgames.PvpgamesLoader
 api-version: '1.21.11'
 load: POSTWORLD
 
+# Soft dependencies: if these plugins are installed, load them BEFORE us so we
+# can call into their APIs at enable. Listed plugins are NOT required; the
+# plugin still loads if they're absent — be sure to null/`Bukkit.getPluginManager().isPluginEnabled(...)`-check
+# before calling into them in code.
+softdepend:
+  - WorldEdit
+  - Multiverse-Core
+
 permissions:
   pvpgames.kit.admin:
     description: Grants every kit-management subcommand. Convenient parent node.
