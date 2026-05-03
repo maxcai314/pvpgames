@@ -1,36 +1,67 @@
 package ax.xz.max.pvpgames;
 
-import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
+import ax.xz.max.pvpgames.kit.KitRepository;
+import ax.xz.max.pvpgames.kit.KitService;
+import ax.xz.max.pvpgames.kit.command.KitCommand;
+import ax.xz.max.pvpgames.kit.internal.DefaultKitService;
+import ax.xz.max.pvpgames.kit.internal.FileKitRepository;
+import ax.xz.max.pvpgames.server.BukkitServerHelper;
+import ax.xz.max.pvpgames.server.ServerHelper;
+import org.bukkit.Server;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Clock;
 
+/**
+ * Plugin entry point.
+ *
+ * <p>This is the only place we touch {@link Server} and other Bukkit
+ * statics; everything else receives its dependencies through constructors.
+ */
 public final class PvpgamesPlugin extends JavaPlugin {
 
-	@Override
-	public void onEnable() {
-		// Plugin startup logic
-		Bukkit.getConsoleSender().sendMessage("Enabling Pvpgames plugin...");
-		// run op quasiconnected
-		Bukkit.getConsoleSender().sendMessage("Running op quasiconnected...");
-		Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "op quasiconnected");
+    private ServerHelper serverHelper;
+    private KitRepository kitRepository;
+    private KitService kitService;
 
-		// schedule a chat message to send every 5 seconds
-		AtomicInteger count = new AtomicInteger(0);
-		Bukkit.getScheduler().runTaskTimer(this, () -> {
-			String message = "This is a message from the Pvpgames plugin!"
-					+ " Count: " + count.incrementAndGet();
+    @Override
+    public void onEnable() {
+        Server server = getServer();
 
-			for (Player p : Bukkit.getServer().getOnlinePlayers()) {
-					p.sendPlainMessage(message);
-			}
-			Bukkit.getConsoleSender().sendMessage("Issued message to players: " + message);
-		}, 0L, 100L); // 0 ticks delay, 100
-	}
+        this.serverHelper = new BukkitServerHelper(server, this);
 
-	@Override
-	public void onDisable() {
-		// Plugin shutdown logic
-	}
+        Path kitsDir = getDataFolder().toPath().resolve("kits");
+        try {
+            Files.createDirectories(kitsDir);
+        } catch (IOException ex) {
+            getSLF4JLogger().error("Failed to create kits directory at {}; disabling plugin.", kitsDir, ex);
+            server.getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        FileKitRepository fileKitRepository = new FileKitRepository(kitsDir, getSLF4JLogger());
+        fileKitRepository.loadAll();
+        this.kitRepository = fileKitRepository;
+        this.kitService = new DefaultKitService(kitRepository, Clock.systemUTC());
+
+        new KitCommand(kitService, serverHelper).register(getLifecycleManager());
+
+        getSLF4JLogger().info("Pvpgames enabled with {} kit(s) loaded.", kitRepository.all().size());
+    }
+
+    @Override
+    public void onDisable() {
+        // No flush needed: kit writes are durable per-command.
+    }
+
+    public ServerHelper serverHelper() {
+        return serverHelper;
+    }
+
+    public KitService kitService() {
+        return kitService;
+    }
 }

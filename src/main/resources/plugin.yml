@@ -6,3 +6,29 @@ main: ax.xz.max.pvpgames.PvpgamesPlugin
 paperPluginLoader: ax.xz.max.pvpgames.PvpgamesLoader
 api-version: '1.21.11'
 load: POSTWORLD
+
+permissions:
+  pvpgames.kit.admin:
+    description: Grants every kit-management subcommand. Convenient parent node.
+    default: op
+    children:
+      pvpgames.kit.create: true
+      pvpgames.kit.load: true
+      pvpgames.kit.delete: true
+      pvpgames.kit.list: true
+      pvpgames.kit.info: true
+  pvpgames.kit.create:
+    description: Save the running player's inventory as a named kit.
+    default: op
+  pvpgames.kit.load:
+    description: Load a saved kit into the running player's inventory.
+    default: op
+  pvpgames.kit.delete:
+    description: Permanently delete a saved kit.
+    default: op
+  pvpgames.kit.list:
+    description: List the names of all saved kits.
+    default: op
+  pvpgames.kit.info:
+    description: Show metadata (creator, creation date) for a saved kit.
+    default: op
