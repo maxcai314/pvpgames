@@ -9,76 +9,102 @@ import ax.xz.max.pvpgames.arena.ArenaService;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.SpawnPoint;
 import ax.xz.max.pvpgames.command.NameParseResult;
+import ax.xz.max.pvpgames.player.PlayerStateSnapshot;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.schematic.SchematicException;
+import ax.xz.max.pvpgames.schematic.SchematicName;
 import ax.xz.max.pvpgames.schematic.SchematicService;
-import ax.xz.max.pvpgames.schematic.UnavailableSchematicService;
-import ax.xz.max.pvpgames.world.UnavailableWorldService;
 import ax.xz.max.pvpgames.world.WorldService;
 import ax.xz.max.pvpgames.world.WorldServiceException;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.slf4j.Logger;
 
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Default {@link ArenaService} implementation.
  *
- * <p>Validation, world/schematic interaction, and player teleportation happen
- * on the calling thread, which must be the server main thread for any method
- * that touches a {@link Player}. Persistence is delegated to
- * {@link ArenaRepository}, whose implementation handles caching and durability.
+ * <p>Owns two pieces of in-memory state:
+ * <ul>
+ *   <li>{@link #sessionPool} — id to active session</li>
+ *   <li>{@link #savedStates} — per-player snapshot taken before they entered
+ *       any session, popped on {@code /arena leave} or restored on
+ *       {@link #shutdown}</li>
+ * </ul>
+ *
+ * <p>"Which session is this player currently inside?" is intentionally not a
+ * separate map: the answer is derivable by matching
+ * {@code player.getWorld().getName()} against the session pool, so we read it
+ * directly in {@link #resolveCurrentArena} instead of duplicating that state.
+ *
+ * <p>All methods touch live {@link Player} state and must be called on the
+ * server main thread.
  */
 public final class DefaultArenaService implements ArenaService {
 
     private final ArenaRepository repository;
     private final WorldService worldService;
     private final SchematicService schematicService;
-    private final ArenaSessionRegistry sessions;
+    private final Server server;
     private final Clock clock;
     private final Logger logger;
+
+    private final Map<Long, ArenaSession> sessionPool = Collections.synchronizedMap(new LinkedHashMap<>());
+    private final Map<UUID, PlayerStateSnapshot> savedStates = Collections.synchronizedMap(new LinkedHashMap<>());
+    private final AtomicLong nextSessionId = new AtomicLong(1);
 
     public DefaultArenaService(
             ArenaRepository repository,
             WorldService worldService,
             SchematicService schematicService,
-            ArenaSessionRegistry sessions,
+            Server server,
             Clock clock,
             Logger logger) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.worldService = Objects.requireNonNull(worldService, "worldService");
         this.schematicService = Objects.requireNonNull(schematicService, "schematicService");
-        this.sessions = Objects.requireNonNull(sessions, "sessions");
+        this.server = Objects.requireNonNull(server, "server");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
+    // --- CRUD ---------------------------------------------------------------
+
     @Override
-    public ArenaResult.CreateResult create(CommandSender creator, String rawArenaName, String schematicName) {
+    public ArenaResult.CreateResult create(CommandSender creator, String rawArenaName, String rawSchematicName) {
         Objects.requireNonNull(creator, "creator");
 
-        NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
-        if (parsed instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
+        NameParseResult<ArenaName> parsedName = ArenaName.tryParse(rawArenaName);
+        if (parsedName instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
             return new ArenaResult.CreateResult.InvalidName(reason);
         }
-        ArenaName name = ((NameParseResult.Valid<ArenaName>) parsed).name();
+        ArenaName name = ((NameParseResult.Valid<ArenaName>) parsedName).name();
 
-        String schematicReason = validateSchematicName(schematicName);
-        if (schematicReason != null) {
-            return new ArenaResult.CreateResult.InvalidSchematic(schematicReason);
+        NameParseResult<SchematicName> parsedSchematic = SchematicName.tryParse(rawSchematicName);
+        if (parsedSchematic instanceof NameParseResult.Invalid<SchematicName>(String reason)) {
+            return new ArenaResult.CreateResult.InvalidSchematic(reason);
         }
+        SchematicName schematic = ((NameParseResult.Valid<SchematicName>) parsedSchematic).name();
 
         Arena arena = new Arena(
                 name,
-                schematicName,
+                schematic,
                 List.of(),
                 clock.instant(),
                 creator instanceof Player p ? p.getUniqueId() : null);
@@ -125,29 +151,26 @@ public final class DefaultArenaService implements ArenaService {
         return Optional.empty();
     }
 
-    @Override
-    public ArenaResult.PreviewResult preview(Player admin, String rawArenaName) {
-        Objects.requireNonNull(admin, "admin");
+    // --- Sessions -----------------------------------------------------------
 
-        Optional<String> missing = missingDependencyMessage();
-        if (missing.isPresent()) {
-            return new ArenaResult.PreviewResult.DependencyMissing(missing.get());
-        }
+    @Override
+    public ArenaResult.PreviewResult preview(Player player, String rawArenaName) {
+        Objects.requireNonNull(player, "player");
 
         NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
         if (parsed instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
             return new ArenaResult.PreviewResult.InvalidName(reason);
         }
-        ArenaName name = ((NameParseResult.Valid<ArenaName>) parsed).name();
+        ArenaName arenaName = ((NameParseResult.Valid<ArenaName>) parsed).name();
 
-        Optional<Arena> maybeArena = repository.find(name);
+        Optional<Arena> maybeArena = repository.find(arenaName);
         if (maybeArena.isEmpty()) {
             return new ArenaResult.PreviewResult.NotFound(rawArenaName);
         }
         Arena arena = maybeArena.get();
 
-        String worldName = arena.name().worldName();
-        boolean alreadyLoaded = worldService.worldExists(worldName);
+        long sessionId = nextSessionId.getAndIncrement();
+        String worldName = ArenaName.WORLD_PREFIX + sessionId;
 
         World world;
         try {
@@ -156,54 +179,135 @@ public final class DefaultArenaService implements ArenaService {
             return new ArenaResult.PreviewResult.WorldFailed(ex.getMessage());
         }
 
-        if (!alreadyLoaded) {
-            try {
-                schematicService.pasteAtOrigin(arena.schematicName(), world, BlockVec3.ORIGIN);
-            } catch (SchematicException.NotFound ex) {
-                return new ArenaResult.PreviewResult.SchematicMissing(arena.schematicName());
-            } catch (SchematicException.LoadFailed ex) {
-                return new ArenaResult.PreviewResult.SchematicLoadFailed(arena.schematicName(), ex.getMessage());
-            } catch (SchematicException ex) {
-                return new ArenaResult.PreviewResult.SchematicLoadFailed(arena.schematicName(), ex.getMessage());
-            }
+        try {
+            schematicService.pasteAtOrigin(arena.schematicName(), world, BlockVec3.ORIGIN);
+        } catch (SchematicException.NotFound ex) {
+            tryDeleteWorld(worldName);
+            return new ArenaResult.PreviewResult.SchematicMissing(arena.schematicName().value());
+        } catch (SchematicException ex) {
+            tryDeleteWorld(worldName);
+            return new ArenaResult.PreviewResult.SchematicLoadFailed(arena.schematicName().value(), ex.getMessage());
         }
 
-        // Capture session BEFORE teleporting so the location is the admin's prior position.
-        if (sessions.get(admin.getUniqueId()).isEmpty()) {
-            sessions.put(new ArenaSession(
-                    admin.getUniqueId(),
-                    arena.name(),
-                    admin.getLocation().clone(),
-                    admin.getGameMode()));
-        }
+        ArenaSession session = new ArenaSession(sessionId, arenaName, worldName);
+        sessionPool.put(sessionId, session);
 
-        admin.teleport(world.getSpawnLocation());
-        admin.setGameMode(GameMode.SPECTATOR);
+        boolean noSpawnsYet = arena.spawns().isEmpty();
+        joinSessionInternal(player, session, arena, world);
 
-        return alreadyLoaded
-                ? new ArenaResult.PreviewResult.AlreadyLoaded(arena, world)
-                : new ArenaResult.PreviewResult.Pasted(arena, world);
+        return new ArenaResult.PreviewResult.Started(session, world, noSpawnsYet);
     }
 
     @Override
-    public ArenaResult.AddSpawnResult addSpawnAtPlayer(Player admin) {
-        Objects.requireNonNull(admin, "admin");
-        Location loc = admin.getLocation();
-        return addSpawnInternal(admin, SpawnPoint.of(loc));
+    public ArenaResult.JoinResult join(Player player, long sessionId) {
+        Objects.requireNonNull(player, "player");
+
+        ArenaSession session = sessionPool.get(sessionId);
+        if (session == null) {
+            return new ArenaResult.JoinResult.SessionNotFound(sessionId);
+        }
+        World world = server.getWorld(session.worldName());
+        // World should exist as long as the session is in the pool; if it
+        // doesn't, treat as a missing session.
+        if (world == null) {
+            sessionPool.remove(sessionId);
+            return new ArenaResult.JoinResult.SessionNotFound(sessionId);
+        }
+
+        Arena arena = repository.find(session.arena()).orElse(null);
+        boolean noSpawnsYet = arena == null || arena.spawns().isEmpty();
+        joinSessionInternal(player, session, arena, world);
+
+        return new ArenaResult.JoinResult.Joined(session, noSpawnsYet);
+    }
+
+    /**
+     * Caches the player's pre-session state (if not already cached), wipes
+     * their state to {@link PlayerStateSnapshot#DEFAULT}, and teleports them
+     * to the arena's first spawn point (or the world spawn if no spawns
+     * exist). The player→session association is implicit: after the
+     * teleport the player's current world matches {@code session.worldName()},
+     * which is what {@link #resolveCurrentArena} reads.
+     *
+     * <p>{@code arena} may be {@code null} (deleted out from under the
+     * session); we still teleport into the world but to its spawn point.
+     */
+    private void joinSessionInternal(Player player, ArenaSession session, Arena arena, World sessionWorld) {
+        UUID playerId = player.getUniqueId();
+
+        savedStates.computeIfAbsent(playerId, ignored -> PlayerStateSnapshot.captureFrom(player));
+
+        PlayerStateSnapshot.DEFAULT.applyTo(player);
+
+        Location target;
+        if (arena != null && !arena.spawns().isEmpty()) {
+            target = arena.spawns().get(0).toLocation(sessionWorld);
+        } else {
+            target = sessionWorld.getSpawnLocation();
+        }
+        player.teleport(target);
+    }
+
+    /**
+     * Mirror of {@link #joinSessionInternal}: pops the player's pre-session
+     * snapshot from {@link #savedStates} and applies it to restore the world
+     * / location / inventory / health / etc. they had when they first joined
+     * any session. The player→session association is implicit (derived from
+     * world name), so there is no separate map to clear.
+     *
+     * <p>Idempotent: if no snapshot is cached (the player was never in a
+     * session, or has already been restored), this is a no-op and returns
+     * {@code false}. Otherwise the snapshot is applied and {@code true} is
+     * returned.
+     *
+     * <p>Called from {@link #leave(Player)} (a player explicitly running
+     * {@code /arena leave}) and from {@link #shutdown()} (one final restore
+     * for every online player still tracked in the saved-state map).
+     */
+    private boolean leaveSessionInternal(Player player) {
+        UUID playerId = player.getUniqueId();
+
+        PlayerStateSnapshot saved = savedStates.remove(playerId);
+        if (saved == null) return false;
+        saved.applyTo(player);
+        return true;
+    }
+
+    @Override
+    public ArenaResult.LeaveResult leave(Player player) {
+        Objects.requireNonNull(player, "player");
+        return leaveSessionInternal(player)
+                ? new ArenaResult.LeaveResult.Returned()
+                : new ArenaResult.LeaveResult.NoActiveSession();
+    }
+
+    @Override
+    public Collection<ArenaSession> activeSessions() {
+        synchronized (sessionPool) {
+            return List.copyOf(sessionPool.values());
+        }
+    }
+
+    // --- Spawn ops ----------------------------------------------------------
+
+    @Override
+    public ArenaResult.AddSpawnResult addSpawnAtPlayer(Player player) {
+        Objects.requireNonNull(player, "player");
+        return addSpawnInternal(player, SpawnPoint.of(player.getLocation()));
     }
 
     @Override
     public ArenaResult.AddSpawnResult addSpawnExplicit(
-            Player admin, double x, double y, double z, Float yaw, Float pitch) {
-        Objects.requireNonNull(admin, "admin");
-        Location playerLoc = admin.getLocation();
+            Player player, double x, double y, double z, Float yaw, Float pitch) {
+        Objects.requireNonNull(player, "player");
+        Location playerLoc = player.getLocation();
         float effectiveYaw = yaw != null ? yaw : playerLoc.getYaw();
         float effectivePitch = pitch != null ? pitch : playerLoc.getPitch();
-        return addSpawnInternal(admin, new SpawnPoint(x, y, z, effectiveYaw, effectivePitch));
+        return addSpawnInternal(player, new SpawnPoint(x, y, z, effectiveYaw, effectivePitch));
     }
 
-    private ArenaResult.AddSpawnResult addSpawnInternal(Player admin, SpawnPoint spawn) {
-        return switch (resolveCurrentArena(admin)) {
+    private ArenaResult.AddSpawnResult addSpawnInternal(Player player, SpawnPoint spawn) {
+        return switch (resolveCurrentArena(player)) {
             case CurrentArena.NotInArenaWorld ignored -> new ArenaResult.AddSpawnResult.NotInArenaWorld();
             case CurrentArena.ArenaMissing(String requestedName) ->
                     new ArenaResult.AddSpawnResult.ArenaMissing(requestedName);
@@ -220,9 +324,9 @@ public final class DefaultArenaService implements ArenaService {
     }
 
     @Override
-    public ArenaResult.ListSpawnResult listSpawns(Player admin) {
-        Objects.requireNonNull(admin, "admin");
-        return switch (resolveCurrentArena(admin)) {
+    public ArenaResult.ListSpawnResult listSpawns(Player player) {
+        Objects.requireNonNull(player, "player");
+        return switch (resolveCurrentArena(player)) {
             case CurrentArena.NotInArenaWorld ignored -> new ArenaResult.ListSpawnResult.NotInArenaWorld();
             case CurrentArena.ArenaMissing(String requestedName) ->
                     new ArenaResult.ListSpawnResult.ArenaMissing(requestedName);
@@ -232,9 +336,9 @@ public final class DefaultArenaService implements ArenaService {
     }
 
     @Override
-    public ArenaResult.VisitSpawnResult visitSpawn(Player admin, int oneBasedIndex) {
-        Objects.requireNonNull(admin, "admin");
-        return switch (resolveCurrentArena(admin)) {
+    public ArenaResult.VisitSpawnResult visitSpawn(Player player, int oneBasedIndex) {
+        Objects.requireNonNull(player, "player");
+        return switch (resolveCurrentArena(player)) {
             case CurrentArena.NotInArenaWorld ignored -> new ArenaResult.VisitSpawnResult.NotInArenaWorld();
             case CurrentArena.ArenaMissing(String requestedName) ->
                     new ArenaResult.VisitSpawnResult.ArenaMissing(requestedName);
@@ -244,16 +348,16 @@ public final class DefaultArenaService implements ArenaService {
                     yield new ArenaResult.VisitSpawnResult.IndexOutOfRange(oneBasedIndex, spawns.size());
                 }
                 SpawnPoint spawn = spawns.get(oneBasedIndex - 1);
-                admin.teleport(spawn.toLocation(admin.getWorld()));
+                player.teleport(spawn.toLocation(player.getWorld()));
                 yield new ArenaResult.VisitSpawnResult.Visited(arena, oneBasedIndex, spawn);
             }
         };
     }
 
     @Override
-    public ArenaResult.RemoveSpawnResult removeSpawn(Player admin, int oneBasedIndex) {
-        Objects.requireNonNull(admin, "admin");
-        return switch (resolveCurrentArena(admin)) {
+    public ArenaResult.RemoveSpawnResult removeSpawn(Player player, int oneBasedIndex) {
+        Objects.requireNonNull(player, "player");
+        return switch (resolveCurrentArena(player)) {
             case CurrentArena.NotInArenaWorld ignored -> new ArenaResult.RemoveSpawnResult.NotInArenaWorld();
             case CurrentArena.ArenaMissing(String requestedName) ->
                     new ArenaResult.RemoveSpawnResult.ArenaMissing(requestedName);
@@ -274,76 +378,112 @@ public final class DefaultArenaService implements ArenaService {
         };
     }
 
+    // --- Lifecycle ----------------------------------------------------------
+
     @Override
-    public ArenaResult.LeaveResult leave(Player admin) {
-        Objects.requireNonNull(admin, "admin");
-        Optional<ArenaSession> maybeSession = sessions.remove(admin.getUniqueId());
-        if (maybeSession.isEmpty()) {
-            return new ArenaResult.LeaveResult.NoActiveSession();
+    public void shutdown() {
+        Location fallback = pickFallbackLocation();
+
+        // Restore any cached states for online players via leaveSessionInternal.
+        List<UUID> cached;
+        synchronized (savedStates) {
+            cached = new ArrayList<>(savedStates.keySet());
         }
-        ArenaSession session = maybeSession.get();
-        admin.teleport(session.previousLocation());
-        admin.setGameMode(session.previousGameMode());
-        return new ArenaResult.LeaveResult.Returned(session.previousLocation(), session.previousGameMode());
+        for (UUID playerId : cached) {
+            Player player = server.getPlayer(playerId);
+            if (player == null) {
+                savedStates.remove(playerId);
+                logger.warn("Player {} is offline at shutdown; pre-session state was not restored.", playerId);
+                continue;
+            }
+            try {
+                leaveSessionInternal(player);
+            } catch (Exception ex) {
+                logger.warn("Failed to restore {} on shutdown: {}", player.getName(), ex.getMessage());
+                if (fallback != null) {
+                    player.teleport(fallback);
+                    player.setGameMode(GameMode.SURVIVAL);
+                }
+            }
+        }
+        // Anything still cached belonged to offline players we couldn't restore.
+        savedStates.clear();
+
+        // Tear down every session world. Anyone still inside gets the fallback
+        // (e.g. they joined via /world tp without using /arena join, so we
+        // never captured their state).
+        List<ArenaSession> toTearDown;
+        synchronized (sessionPool) {
+            toTearDown = new ArrayList<>(sessionPool.values());
+        }
+        for (ArenaSession session : toTearDown) {
+            World world = server.getWorld(session.worldName());
+            if (world != null) {
+                for (Player stuck : new ArrayList<>(world.getPlayers())) {
+                    logger.warn("Player {} remained in arena world '{}' at shutdown; sending to fallback.",
+                            stuck.getName(), session.worldName());
+                    if (fallback != null) {
+                        stuck.teleport(fallback);
+                        stuck.setGameMode(GameMode.SURVIVAL);
+                    }
+                }
+            }
+            try {
+                worldService.deleteWorld(session.worldName());
+            } catch (WorldServiceException ex) {
+                logger.warn("Failed to delete arena world '{}' at shutdown: {}",
+                        session.worldName(), ex.getMessage());
+            }
+        }
+        sessionPool.clear();
     }
+
+    // --- Helpers ------------------------------------------------------------
 
     /**
-     * @return the reason a world-touching operation cannot run, if any
-     *         dependency is missing
-     */
-    private Optional<String> missingDependencyMessage() {
-        boolean worldDown = worldService instanceof UnavailableWorldService;
-        boolean schematicDown = schematicService instanceof UnavailableSchematicService;
-        if (worldDown && schematicDown) {
-            return Optional.of("Multiverse-Core and WorldEdit are not installed.");
-        }
-        if (worldDown) {
-            return Optional.of(UnavailableWorldService.MESSAGE);
-        }
-        if (schematicDown) {
-            return Optional.of(UnavailableSchematicService.MESSAGE);
-        }
-        return Optional.empty();
-    }
-
-    private CurrentArena resolveCurrentArena(Player admin) {
-        String worldName = admin.getWorld().getName();
-        if (!worldName.startsWith(ArenaName.WORLD_PREFIX)) {
-            return new CurrentArena.NotInArenaWorld();
-        }
-        String rawArenaName = worldName.substring(ArenaName.WORLD_PREFIX.length());
-        NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
-        if (!(parsed instanceof NameParseResult.Valid<ArenaName>(ArenaName name))) {
-            // World name is prefixed but the suffix is not a valid arena name; treat as foreign.
-            return new CurrentArena.NotInArenaWorld();
-        }
-        return repository.find(name)
-                .<CurrentArena>map(CurrentArena.Found::new)
-                .orElseGet(() -> new CurrentArena.ArenaMissing(rawArenaName));
-    }
-
-    /** @return reason string if invalid, {@code null} if valid */
-    private static String validateSchematicName(String raw) {
-        if (raw == null || raw.isEmpty()) {
-            return "Schematic name cannot be empty.";
-        }
-        if (raw.contains("/") || raw.contains("\\")) {
-            return "Schematic name cannot contain path separators.";
-        }
-        if (raw.contains("..")) {
-            return "Schematic name cannot contain '..'.";
-        }
-        return null;
-    }
-
-    /**
-     * Internal three-way result of looking up "which arena is this player
-     * currently inside". Lets the world-touching commands share the lookup
-     * without each duplicating the prefix-strip and repo-lookup logic.
+     * Internal three-way result of "which arena is this player currently
+     * editing". Used by every spawn-list command.
      */
     private sealed interface CurrentArena {
         record NotInArenaWorld() implements CurrentArena {}
         record ArenaMissing(String requestedName) implements CurrentArena {}
         record Found(Arena arena) implements CurrentArena {}
+    }
+
+    private CurrentArena resolveCurrentArena(Player player) {
+        // The player is in an arena session iff their current world name
+        // matches one of the sessions we created. No separate player→session
+        // map needed — the world the player is actually standing in is the
+        // source of truth.
+        String currentWorld = player.getWorld().getName();
+        ArenaSession session;
+        synchronized (sessionPool) {
+            session = sessionPool.values().stream()
+                    .filter(s -> s.worldName().equals(currentWorld))
+                    .findFirst()
+                    .orElse(null);
+        }
+        if (session == null) return new CurrentArena.NotInArenaWorld();
+
+        return repository.find(session.arena())
+                .<CurrentArena>map(CurrentArena.Found::new)
+                .orElseGet(() -> new CurrentArena.ArenaMissing(session.arena().value()));
+    }
+
+    private Location pickFallbackLocation() {
+        for (World world : server.getWorlds()) {
+            if (!world.getName().startsWith(ArenaName.WORLD_PREFIX)) {
+                return world.getSpawnLocation();
+            }
+        }
+        return null;
+    }
+
+    private void tryDeleteWorld(String worldName) {
+        try {
+            worldService.deleteWorld(worldName);
+        } catch (WorldServiceException ex) {
+            logger.warn("Failed to roll back arena world '{}': {}", worldName, ex.getMessage());
+        }
     }
 }

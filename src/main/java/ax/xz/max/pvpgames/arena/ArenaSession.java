@@ -1,30 +1,26 @@
 package ax.xz.max.pvpgames.arena;
 
-import org.bukkit.GameMode;
-import org.bukkit.Location;
-
 import java.util.Objects;
-import java.util.UUID;
 
 /**
- * Per-admin record of an active {@code /arena preview} session.
+ * Handle to one of the temporary preview worlds we created. Multiple players
+ * can be inside the same session at once: {@code /arena preview} starts a new
+ * session and joins, while {@code /arena join <id>} joins an existing one.
  *
- * <p>The session captures the state we need to restore when the admin runs
- * {@code /arena leave}: where they were before the preview and what gamemode
- * they had. The arena identity is stored alongside as a convenience; it can
- * also be derived from the player's current world at any time.
+ * <p>Sessions live in the {@link ArenaService} session pool from creation
+ * until plugin disable. The pool starts empty on plugin enable and is wiped
+ * on plugin disable; sessions never persist across server restarts.
+ *
+ * @param id        a unique identifier within this server run; assigned by
+ *                  the service. Players use it as the argument to
+ *                  {@code /arena join}
+ * @param arena     the arena this session is hosting
+ * @param worldName the Bukkit name of the temporary world this session owns
  */
-public record ArenaSession(
-        UUID admin,
-        ArenaName arena,
-        Location previousLocation,
-        GameMode previousGameMode
-) {
+public record ArenaSession(long id, ArenaName arena, String worldName) {
 
     public ArenaSession {
-        Objects.requireNonNull(admin, "admin");
         Objects.requireNonNull(arena, "arena");
-        Objects.requireNonNull(previousLocation, "previousLocation");
-        Objects.requireNonNull(previousGameMode, "previousGameMode");
+        Objects.requireNonNull(worldName, "worldName");
     }
 }

@@ -1,7 +1,5 @@
 package ax.xz.max.pvpgames.arena;
 
-import org.bukkit.GameMode;
-import org.bukkit.Location;
 import org.bukkit.World;
 
 import java.util.List;
@@ -40,19 +38,29 @@ public sealed interface ArenaResult {
         }
     }
 
-    /** Outcome of a {@code preview} operation. */
+    /**
+     * Outcome of a {@code preview} operation: a brand-new session is created
+     * for the named arena and the caller is joined to it.
+     */
     sealed interface PreviewResult extends ArenaResult {
-        /** A new world was created and the schematic was just pasted in. */
-        record Pasted(Arena arena, World world) implements PreviewResult {}
-        /** A previously-created world was reused; no paste was performed. */
-        record AlreadyLoaded(Arena arena, World world) implements PreviewResult {}
-        record NotFound(String requestedName) implements PreviewResult {}
+        record Started(ArenaSession session, World world, boolean noSpawnsYet) implements PreviewResult {}
         record InvalidName(String reason) implements PreviewResult {}
+        record NotFound(String requestedName) implements PreviewResult {}
         record SchematicMissing(String schematicName) implements PreviewResult {}
         record SchematicLoadFailed(String schematicName, String message) implements PreviewResult {}
         record WorldFailed(String message) implements PreviewResult {}
         /** WorldEdit or Multiverse-Core is not installed. */
         record DependencyMissing(String message) implements PreviewResult {}
+    }
+
+    /**
+     * Outcome of a {@code join} operation: the caller is added to an existing
+     * session.
+     */
+    sealed interface JoinResult extends ArenaResult {
+        record Joined(ArenaSession session, boolean noSpawnsYet) implements JoinResult {}
+        record SessionNotFound(long sessionId) implements JoinResult {}
+        record DependencyMissing(String message) implements JoinResult {}
     }
 
     /** Outcome of an {@code addSpawn} operation. */
@@ -93,7 +101,7 @@ public sealed interface ArenaResult {
 
     /** Outcome of a {@code leave} operation. */
     sealed interface LeaveResult extends ArenaResult {
-        record Returned(Location previousLocation, GameMode previousGameMode) implements LeaveResult {}
+        record Returned() implements LeaveResult {}
         record NoActiveSession() implements LeaveResult {}
     }
 }

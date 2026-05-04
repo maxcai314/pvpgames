@@ -5,6 +5,7 @@ import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.SpawnPoint;
+import ax.xz.max.pvpgames.schematic.SchematicName;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -151,7 +152,7 @@ public final class FileArenaRepository implements ArenaRepository {
 
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set(KEY_NAME, arena.name().value());
-        yaml.set(KEY_SCHEMATIC, arena.schematicName());
+        yaml.set(KEY_SCHEMATIC, arena.schematicName().value());
         yaml.set(KEY_CREATED_AT, arena.createdAt().toString());
         if (arena.createdBy() != null) {
             yaml.set(KEY_CREATED_BY, arena.createdBy().toString());
@@ -189,9 +190,15 @@ public final class FileArenaRepository implements ArenaRepository {
         }
         ArenaName name = new ArenaName(rawName);
 
-        String schematic = yaml.getString(KEY_SCHEMATIC);
-        if (schematic == null || schematic.isEmpty()) {
+        String rawSchematic = yaml.getString(KEY_SCHEMATIC);
+        if (rawSchematic == null || rawSchematic.isEmpty()) {
             throw new InvalidConfigurationException("missing 'schematic'");
+        }
+        SchematicName schematic;
+        try {
+            schematic = new SchematicName(rawSchematic);
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidConfigurationException("invalid 'schematic': " + ex.getMessage());
         }
 
         Instant createdAt = readInstant(yaml.getString(KEY_CREATED_AT));

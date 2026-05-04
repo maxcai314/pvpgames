@@ -1,5 +1,7 @@
 package ax.xz.max.pvpgames.arena;
 
+import ax.xz.max.pvpgames.schematic.SchematicName;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,7 +23,7 @@ import java.util.UUID;
  */
 public record Arena(
         ArenaName name,
-        String schematicName,
+        SchematicName schematicName,
         List<SpawnPoint> spawns,
         Instant createdAt,
         UUID createdBy

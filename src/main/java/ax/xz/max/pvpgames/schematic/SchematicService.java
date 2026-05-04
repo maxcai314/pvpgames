@@ -5,11 +5,11 @@ import org.bukkit.World;
 /**
  * Abstraction over a schematic-loading plugin (currently WorldEdit).
  *
- * <p>Lookup is by short name (e.g. {@code "myarena"}); the implementation
- * resolves it to a file under WorldEdit's schematics directory. When the
- * underlying plugin is missing, a fallback impl throws
- * {@link SchematicException} from every method so the rest of the plugin
- * keeps working.
+ * <p>Lookup is by {@link SchematicName} (a validated short name like
+ * {@code "myarena"}); the implementation resolves it to a file under
+ * WorldEdit's schematics directory. When the underlying plugin is missing, a
+ * fallback impl throws {@link SchematicException} from every method so the
+ * rest of the plugin keeps working.
  */
 public interface SchematicService {
 
@@ -22,11 +22,11 @@ public interface SchematicService {
      * @throws SchematicException.LoadFailed  if the file exists but cannot be parsed/pasted
      * @throws SchematicException             if the schematic plugin is unavailable
      */
-    void pasteAtOrigin(String schematicName, World targetWorld, BlockVec3 origin) throws SchematicException;
+    void pasteAtOrigin(SchematicName schematicName, World targetWorld, BlockVec3 origin) throws SchematicException;
 
     /**
      * @return {@code true} if a schematic file with this name resolves to a
      *         readable file on disk
      */
-    boolean schematicExists(String schematicName);
+    boolean schematicExists(SchematicName schematicName);
 }

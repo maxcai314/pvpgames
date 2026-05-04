@@ -42,22 +42,24 @@ public final class WorldEditSchematicService implements SchematicService {
     }
 
     @Override
-    public boolean schematicExists(String schematicName) {
-        return resolveFile(schematicName) != null;
+    public boolean schematicExists(SchematicName schematicName) {
+        Objects.requireNonNull(schematicName, "schematicName");
+        return resolveFile(schematicName.value()) != null;
     }
 
     @Override
-    public void pasteAtOrigin(String schematicName, World targetWorld, BlockVec3 origin) throws SchematicException {
+    public void pasteAtOrigin(SchematicName schematicName, World targetWorld, BlockVec3 origin) throws SchematicException {
         Objects.requireNonNull(schematicName, "schematicName");
         Objects.requireNonNull(targetWorld, "targetWorld");
         Objects.requireNonNull(origin, "origin");
 
-        File file = resolveFile(schematicName);
+        File file = resolveFile(schematicName.value());
         if (file == null) {
             throw new SchematicException.NotFound(
-                    "Schematic '" + schematicName + "' not found in " + schematicsDir);
+                    "Schematic '" + schematicName.value() + "' not found in " + schematicsDir);
         }
 
+        // todo: deprecated worldedit logic
         ClipboardFormat format = ClipboardFormats.findByFile(file);
         if (format == null) {
             throw new SchematicException.NotFound(

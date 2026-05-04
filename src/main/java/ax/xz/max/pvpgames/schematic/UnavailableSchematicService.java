@@ -10,12 +10,12 @@ public final class UnavailableSchematicService implements SchematicService {
     public static final String MESSAGE = "WorldEdit is not installed.";
 
     @Override
-    public void pasteAtOrigin(String schematicName, World targetWorld, BlockVec3 origin) throws SchematicException {
+    public void pasteAtOrigin(SchematicName schematicName, World targetWorld, BlockVec3 origin) throws SchematicException {
         throw new SchematicException(MESSAGE);
     }
 
     @Override
-    public boolean schematicExists(String schematicName) {
+    public boolean schematicExists(SchematicName schematicName) {
         return false;
     }
 }

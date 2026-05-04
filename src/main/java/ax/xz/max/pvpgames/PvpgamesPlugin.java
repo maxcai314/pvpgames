@@ -4,9 +4,9 @@ import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.ArenaService;
 import ax.xz.max.pvpgames.arena.command.ArenaCommand;
-import ax.xz.max.pvpgames.arena.internal.ArenaSessionRegistry;
 import ax.xz.max.pvpgames.arena.internal.DefaultArenaService;
 import ax.xz.max.pvpgames.arena.internal.FileArenaRepository;
+import ax.xz.max.pvpgames.arena.internal.UnavailableArenaService;
 import ax.xz.max.pvpgames.kit.KitRepository;
 import ax.xz.max.pvpgames.kit.KitService;
 import ax.xz.max.pvpgames.kit.command.KitCommand;
@@ -51,7 +51,6 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     private ArenaRepository arenaRepository;
     private ArenaService arenaService;
-    private ArenaSessionRegistry arenaSessions;
 
     @Override
     public void onEnable() {
@@ -73,9 +72,10 @@ public final class PvpgamesPlugin extends JavaPlugin {
                 ? new WorldEditSchematicService(schematicsDir, getSLF4JLogger())
                 : new UnavailableSchematicService();
 
-        // Sweep leftover preview worlds from a crashed prior run before we let
-        // the arena service near them. Quietly skipped when Multiverse is absent.
-        sweepArenaWorlds("on enable");
+        // Sweep leftover preview worlds from a crashed prior run. The arena
+        // service starts empty on every enable, so anything matching our
+        // prefix is orphaned and should be removed before we let players in.
+        sweepLeftoverArenaWorlds();
 
         Path kitsDir = getDataFolder().toPath().resolve("kits");
         try {
@@ -98,17 +98,20 @@ public final class PvpgamesPlugin extends JavaPlugin {
             return;
         }
 
-        this.arenaSessions = new ArenaSessionRegistry();
-        server.getPluginManager().registerEvents(arenaSessions, this);
-
         this.arenaRepository = new FileArenaRepository(arenasDir, getSLF4JLogger());
-        this.arenaService = new DefaultArenaService(
-                arenaRepository, worldService, schematicService,
-                arenaSessions, Clock.systemUTC(), getSLF4JLogger());
+        // If WorldEdit or Multiverse is missing, swap in an UnavailableArenaService
+        // that returns DependencyMissing for every world-touching op while still
+        // letting CRUD work. This keeps DefaultArenaService free of branching.
+        String missingDeps = describeMissingDependencies(mvReady, weReady);
+        this.arenaService = missingDeps == null
+                ? new DefaultArenaService(
+                        arenaRepository, worldService, schematicService,
+                        server, Clock.systemUTC(), getSLF4JLogger())
+                : new UnavailableArenaService(arenaRepository, Clock.systemUTC(), missingDeps);
 
         // register commands
         new KitCommand(kitService, serverHelper).register(getLifecycleManager());
-        new ArenaCommand(arenaService, serverHelper).register(getLifecycleManager());
+        new ArenaCommand(arenaService, serverHelper, server).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");
         if (weReady) {
@@ -128,16 +131,18 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Clean up any preview worlds we created so a fresh enable starts clean.
-        // Multiverse loads before us (softdepend) and disables after us, so its
-        // API is still available here.
-        sweepArenaWorlds("on disable");
+        // Restore every cached pre-session player state and tear down every
+        // session world. Multiverse loads before us (softdepend) and disables
+        // after us, so its API is still alive here.
+        if (arenaService != null) {
+            arenaService.shutdown();
+        }
     }
 
     /**
      * Paper / Bukkit asks the plugin for a {@link ChunkGenerator} when a world
      * is created with {@code generator: <plugin-name>}. {@link MultiverseWorldService}
-     * passes our plugin name when creating preview worlds, so this routes Multiverse
+     * passes our plugin name when creating session worlds, so this routes Multiverse
      * to the {@link VoidChunkGenerator} that produces empty void worlds.
      */
     @Override
@@ -145,14 +150,26 @@ public final class PvpgamesPlugin extends JavaPlugin {
         return new VoidChunkGenerator();
     }
 
-    private void sweepArenaWorlds(String phase) {
+    /**
+     * @return human-readable list of missing soft-dependencies, or {@code null}
+     *         when all are present
+     */
+    private static String describeMissingDependencies(boolean mvReady, boolean weReady) {
+        if (!mvReady && !weReady) return "Multiverse-Core and WorldEdit are not installed.";
+        if (!mvReady) return "Multiverse-Core is not installed.";
+        if (!weReady) return "WorldEdit is not installed.";
+        return null;
+    }
+
+    private void sweepLeftoverArenaWorlds() {
         if (worldService == null) return;
         for (String name : worldService.findWorldsByPrefix(ArenaName.WORLD_PREFIX)) {
             try {
                 worldService.deleteWorld(name);
-                getSLF4JLogger().info("Cleaned up arena world '{}' {}.", name, phase);
+                getSLF4JLogger().info("Cleaned up leftover arena world '{}' on enable.", name);
             } catch (WorldServiceException ex) {
-                getSLF4JLogger().warn("Failed to clean up arena world '{}' {}: {}", name, phase, ex.getMessage());
+                getSLF4JLogger().warn("Failed to clean up leftover arena world '{}' on enable: {}",
+                        name, ex.getMessage());
             }
         }
     }
