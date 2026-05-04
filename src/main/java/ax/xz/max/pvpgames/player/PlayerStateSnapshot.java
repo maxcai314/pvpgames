@@ -2,6 +2,7 @@ package ax.xz.max.pvpgames.player;
 
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Registry;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.entity.Player;
@@ -11,7 +12,9 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.util.Vector;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -30,6 +33,12 @@ import java.util.Objects;
  * are deep-copied at the boundary so post-capture edits to the live player
  * don't corrupt the snapshot, and applying a snapshot doesn't share references
  * back with it.
+ *
+ * <p>{@link #attributes} carries the base value of every {@link Attribute} the
+ * player had at capture time. Capturing and applying the whole map (rather
+ * than special-casing {@code MAX_HEALTH}) keeps any custom modifiers admins
+ * have configured (movement speed, attack damage, etc.) intact across a
+ * preview.
  */
 public record PlayerStateSnapshot(
         Location location,
@@ -53,7 +62,8 @@ public record PlayerStateSnapshot(
         boolean flying,
         float walkSpeed,
         float flySpeed,
-        List<PotionEffect> potionEffects
+        List<PotionEffect> potionEffects,
+        Map<Attribute, Double> attributes
 ) {
 
     public PlayerStateSnapshot {
@@ -64,6 +74,7 @@ public record PlayerStateSnapshot(
         // offHand is intentionally nullable.
         Objects.requireNonNull(velocity, "velocity");
         Objects.requireNonNull(potionEffects, "potionEffects");
+        Objects.requireNonNull(attributes, "attributes");
         location = location == null ? null : location.clone();
         velocity = velocity.clone();
         storage = deepCopy(storage);
@@ -71,13 +82,18 @@ public record PlayerStateSnapshot(
         offHand = offHand == null ? null : offHand.clone();
         // PotionEffect itself is immutable, so List.copyOf is enough.
         potionEffects = List.copyOf(potionEffects);
+        // Doubles and Attribute keys are both immutable, so a shallow copy is
+        // genuinely immutable.
+        attributes = Map.copyOf(attributes);
     }
 
     /**
      * "Fresh-join" baseline: empty inventory, full health and food, default
      * speeds, no potion effects, no flight, no fire, no momentum. {@code
      * location} is {@code null} so {@link #applyTo} only wipes state without
-     * moving the player; the caller teleports separately.
+     * moving the player; the caller teleports separately. {@code attributes}
+     * is empty so {@link #applyTo} touches no attribute base-values, leaving
+     * the player's existing modifiers (from items, effects, etc.) alone.
      */
     public static final PlayerStateSnapshot DEFAULT = new PlayerStateSnapshot(
             null,
@@ -101,11 +117,14 @@ public record PlayerStateSnapshot(
             false,
             0.2f,
             0.1f,
-            List.of()
+            List.of(),
+            Map.of()
     );
 
     /**
-     * Captures every field listed on this record off the given player.
+     * Captures every field listed on this record off the given player,
+     * including the base value of every {@link Attribute} the player has an
+     * instance of.
      *
      * <p>Must be called from the server main thread; reads live player data.
      */
@@ -134,8 +153,20 @@ public record PlayerStateSnapshot(
                 player.isFlying(),
                 player.getWalkSpeed(),
                 player.getFlySpeed(),
-                new ArrayList<>(player.getActivePotionEffects())
+                new ArrayList<>(player.getActivePotionEffects()),
+                captureAttributes(player)
         );
+    }
+
+    private static Map<Attribute, Double> captureAttributes(Player player) {
+        Map<Attribute, Double> out = new HashMap<>();
+        for (Attribute attr : Registry.ATTRIBUTE) {
+            AttributeInstance instance = player.getAttribute(attr);
+            if (instance != null) {
+                out.put(attr, instance.getBaseValue());
+            }
+        }
+        return out;
     }
 
     /**
@@ -160,8 +191,17 @@ public record PlayerStateSnapshot(
         inv.setArmorContents(deepCopy(armor));
         inv.setItemInOffHand(offHand == null ? null : offHand.clone());
 
-        // Health is bounded by the player's current MAX_HEALTH attribute;
-        // clamp defensively in case it changed since capture.
+        // Restore attribute base values FIRST so the subsequent setHealth
+        // call clamps against the captured MAX_HEALTH (not whatever the live
+        // player happens to have right now). The map is empty for DEFAULT,
+        // making this a no-op there.
+        attributes.forEach((attr, attrValue) -> {
+            AttributeInstance instance = player.getAttribute(attr);
+            if (instance != null) {
+                instance.setBaseValue(attrValue);
+            }
+        });
+
         AttributeInstance maxHealthAttr = player.getAttribute(Attribute.MAX_HEALTH);
         double maxHealth = maxHealthAttr != null ? maxHealthAttr.getValue() : 20.0;
         player.setHealth(Math.max(0.0, Math.min(health, maxHealth)));
@@ -185,9 +225,7 @@ public record PlayerStateSnapshot(
         player.setAllowFlight(allowFlight);
         player.setFlying(allowFlight && flying);
 
-        for (PotionEffect existing : new ArrayList<>(player.getActivePotionEffects())) {
-            player.removePotionEffect(existing.getType());
-        }
+        player.clearActivePotionEffects();
         for (PotionEffect effect : potionEffects) {
             player.addPotionEffect(effect);
         }

@@ -22,6 +22,7 @@ import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
 import org.slf4j.Logger;
 
 import java.time.Clock;
@@ -62,6 +63,7 @@ public final class DefaultArenaService implements ArenaService {
     private final WorldService worldService;
     private final SchematicService schematicService;
     private final Server server;
+    private final Plugin plugin;
     private final Clock clock;
     private final Logger logger;
 
@@ -74,12 +76,14 @@ public final class DefaultArenaService implements ArenaService {
             WorldService worldService,
             SchematicService schematicService,
             Server server,
+            Plugin plugin,
             Clock clock,
             Logger logger) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.worldService = Objects.requireNonNull(worldService, "worldService");
         this.schematicService = Objects.requireNonNull(schematicService, "schematicService");
         this.server = Objects.requireNonNull(server, "server");
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.logger = Objects.requireNonNull(logger, "logger");
     }
@@ -270,6 +274,16 @@ public final class DefaultArenaService implements ArenaService {
         PlayerStateSnapshot saved = savedStates.remove(playerId);
         if (saved == null) return false;
         saved.applyTo(player);
+        // Multiverse-Core enforces its per-world gamemode via a delayed task
+        // that fires AFTER our applyTo, overwriting whatever we set. Re-apply
+        // the captured gamemode one tick later so our value wins.
+        // todo: this is extremely sus idk why it's like this
+        GameMode targetMode = saved.gameMode();
+        server.getScheduler().runTaskLater(plugin, () -> {
+            if (player.isOnline()) {
+                player.setGameMode(targetMode);
+            }
+        }, 1L);
         return true;
     }
 

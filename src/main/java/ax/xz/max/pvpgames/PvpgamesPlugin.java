@@ -107,7 +107,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
         this.arenaService = missingDeps == null
                 ? new DefaultArenaService(
                         arenaRepository, worldService, schematicService,
-                        server, Clock.systemUTC(), getSLF4JLogger())
+                        server, this, Clock.systemUTC(), getSLF4JLogger())
                 : new UnavailableArenaService(arenaRepository, Clock.systemUTC(), missingDeps);
 
         // register listeners

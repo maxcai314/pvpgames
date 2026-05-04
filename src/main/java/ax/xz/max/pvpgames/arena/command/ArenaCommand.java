@@ -252,6 +252,11 @@ public final class ArenaCommand {
         if (maybe.isEmpty()) return 0;
         Player player = maybe.get();
         String rawName = StringArgumentType.getString(ctx, "name");
+        // Heads-up before the (potentially slow) world creation + schematic
+        // paste; the success/error message comes after.
+        player.sendMessage(MSG.info("Creating new session for arena ")
+                .append(MSG.highlight(rawName))
+                .append(Component.text("...", NamedTextColor.GRAY)));
         return switch (service.preview(player, rawName)) {
             case ArenaResult.PreviewResult.Started(ArenaSession session, World world, boolean noSpawnsYet) -> {
                 player.sendMessage(MSG.success("Started session ")
