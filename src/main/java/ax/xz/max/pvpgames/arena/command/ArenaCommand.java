@@ -8,7 +8,6 @@ import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.SpawnPoint;
 import ax.xz.max.pvpgames.command.CommandSenders;
 import ax.xz.max.pvpgames.command.MessageStyle;
-import ax.xz.max.pvpgames.server.ServerHelper;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.FloatArgumentType;
@@ -73,12 +72,10 @@ public final class ArenaCommand {
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
 
     private final ArenaManager manager;
-    private final ServerHelper serverHelper;
     private final Server server;
 
-    public ArenaCommand(ArenaManager manager, ServerHelper serverHelper, Server server) {
+    public ArenaCommand(ArenaManager manager, Server server) {
         this.manager = Objects.requireNonNull(manager, "manager");
-        this.serverHelper = Objects.requireNonNull(serverHelper, "serverHelper");
         this.server = Objects.requireNonNull(server, "server");
     }
 
@@ -243,7 +240,7 @@ public final class ArenaCommand {
 
         String creator = arena.createdBy() == null
                 ? "<unknown>"
-                : serverHelper.resolveOfflineName(arena.createdBy()).orElse(arena.createdBy().toString());
+                : Optional.ofNullable(server.getOfflinePlayer(arena.createdBy()).getName()).orElse(arena.createdBy().toString());
         String created = DATE_FORMAT.format(arena.createdAt());
 
         sender.sendMessage(MSG.info("Arena ").append(MSG.highlight(arena.name().value())));

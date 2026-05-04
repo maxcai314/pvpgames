@@ -42,8 +42,8 @@ tasks {
         // Auto-install third-party plugins into the test server's plugins/ folder.
         // Versions match the compileOnly deps above.
         downloadPlugins {
-            hangar("WorldEdit", "7.4.2")
-            // WorldGuard is not on Hangar; pull from Modrinth instead.
+            // FastAsyncWorldEdit replaces vanilla WorldEdit at runtime
+            modrinth("fastasyncworldedit", "2.15.0")
             modrinth("worldguard", "7.0.13")
             hangar("Multiverse-Core", "5.6.1")
         }

@@ -6,7 +6,6 @@ import ax.xz.max.pvpgames.kit.Kit;
 import ax.xz.max.pvpgames.kit.KitName;
 import ax.xz.max.pvpgames.kit.KitResult;
 import ax.xz.max.pvpgames.kit.KitService;
-import ax.xz.max.pvpgames.server.ServerHelper;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
@@ -17,6 +16,7 @@ import io.papermc.paper.plugin.lifecycle.event.LifecycleEventManager;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Server;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
@@ -55,11 +55,11 @@ public final class KitCommand {
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
 
     private final KitService service;
-    private final ServerHelper serverHelper;
+    private final Server server;
 
-    public KitCommand(KitService service, ServerHelper serverHelper) {
+    public KitCommand(KitService service, Server server) {
         this.service = Objects.requireNonNull(service, "service");
-        this.serverHelper = Objects.requireNonNull(serverHelper, "serverHelper");
+        this.server = Objects.requireNonNull(server, "server");
     }
 
     /**
@@ -210,7 +210,7 @@ public final class KitCommand {
 
         String creator = kit.createdBy() == null
                 ? "<unknown>"
-                : serverHelper.resolveOfflineName(kit.createdBy()).orElse(kit.createdBy().toString());
+                : Optional.ofNullable(server.getOfflinePlayer(kit.createdBy()).getName()).orElse(kit.createdBy().toString());
         String created = DATE_FORMAT.format(kit.createdAt());
 
         sender.sendMessage(MSG.info("Kit ").append(MSG.highlight(kit.name().value())));

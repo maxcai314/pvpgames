@@ -12,7 +12,7 @@ load: POSTWORLD
 # plugin still loads if they're absent — be sure to null/`Bukkit.getPluginManager().isPluginEnabled(...)`-check
 # before calling into them in code.
 softdepend:
-  - WorldEdit
+  - FastAsyncWorldEdit
   - WorldGuard
   - Multiverse-Core
 

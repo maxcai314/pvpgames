@@ -18,8 +18,6 @@ import ax.xz.max.pvpgames.kit.internal.FileKitRepository;
 import ax.xz.max.pvpgames.schematic.SchematicService;
 import ax.xz.max.pvpgames.schematic.UnavailableSchematicService;
 import ax.xz.max.pvpgames.schematic.WorldEditSchematicService;
-import ax.xz.max.pvpgames.server.BukkitServerHelper;
-import ax.xz.max.pvpgames.server.ServerHelper;
 import ax.xz.max.pvpgames.world.MultiverseWorldService;
 import ax.xz.max.pvpgames.world.UnavailableWorldService;
 import ax.xz.max.pvpgames.world.VoidChunkGenerator;
@@ -58,7 +56,6 @@ import java.util.List;
  */
 public final class PvpgamesPlugin extends JavaPlugin {
 
-    private ServerHelper serverHelper;
     private WorldService worldService;
     private SchematicService schematicService;
     private WorldGuardService worldGuardService;
@@ -75,11 +72,14 @@ public final class PvpgamesPlugin extends JavaPlugin {
     public void onEnable() {
         Server server = getServer();
 
-        this.serverHelper = new BukkitServerHelper(server, this);
-
         PluginManager pm = server.getPluginManager();
         boolean mvReady = pm.isPluginEnabled("Multiverse-Core");
-        boolean weReady = pm.isPluginEnabled("WorldEdit");
+        // We specifically require FastAsyncWorldEdit, not vanilla WorldEdit:
+        // the schematic service runs the paste off the main thread, which is
+        // only safe with FAWE. Vanilla WorldEdit installed alone would crash
+        // the async path with thread-safety errors, so we treat that case as
+        // "schematic features unavailable".
+        boolean faweReady = pm.isPluginEnabled("FastAsyncWorldEdit");
         boolean wgReady = pm.isPluginEnabled("WorldGuard");
 
         this.worldService = mvReady
@@ -88,8 +88,8 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
         Path schematicsDir = getDataFolder().getParentFile().toPath()
                 .resolve("WorldEdit").resolve("schematics");
-        this.schematicService = weReady
-                ? new WorldEditSchematicService(schematicsDir, getSLF4JLogger())
+        this.schematicService = faweReady
+                ? new WorldEditSchematicService(schematicsDir, this, getSLF4JLogger())
                 : new UnavailableSchematicService();
 
         this.worldGuardService = wgReady
@@ -119,7 +119,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
         this.arenaRepository = new FileArenaRepository(arenasDir, getSLF4JLogger());
 
-        String missingDeps = describeMissingDependencies(mvReady, weReady, wgReady);
+        String missingDeps = describeMissingDependencies(mvReady, faweReady, wgReady);
         // todo: ugly pattern. use Optional instead
         if (missingDeps == null) {
             // todo: abstract this into its own cleanup function
@@ -152,14 +152,15 @@ public final class PvpgamesPlugin extends JavaPlugin {
         server.getPluginManager().registerEvents(new ArenaSessionListener(arenaManager), this);
 
         // register commands
-        new KitCommand(kitService, serverHelper).register(getLifecycleManager());
-        new ArenaCommand(arenaManager, serverHelper, server).register(getLifecycleManager());
+        new KitCommand(kitService, server).register(getLifecycleManager());
+        new ArenaCommand(arenaManager, server).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");
-        if (weReady) {
-            getSLF4JLogger().info("WorldEdit plugin found; schematic features enabled.");
+        if (faweReady) {
+            getSLF4JLogger().info("FastAsyncWorldEdit plugin found; schematic features enabled.");
         } else {
-            getSLF4JLogger().warn("WorldEdit plugin not found; arena schematic features disabled.");
+            getSLF4JLogger().warn("FastAsyncWorldEdit plugin not found; arena schematic features disabled. "
+                    + "Vanilla WorldEdit is not sufficient because the schematic paste runs off the main thread.");
         }
         if (mvReady) {
             getSLF4JLogger().info("Multiverse-Core plugin found; shared arenas world enabled.");
@@ -212,17 +213,13 @@ public final class PvpgamesPlugin extends JavaPlugin {
      * @return human-readable list of missing soft-dependencies, or
      *         {@code null} when all are present
      */
-    private static String describeMissingDependencies(boolean mvReady, boolean weReady, boolean wgReady) {
+    private static String describeMissingDependencies(boolean mvReady, boolean faweReady, boolean wgReady) {
         List<String> missing = new ArrayList<>(3);
         if (!mvReady) missing.add("Multiverse-Core");
-        if (!weReady) missing.add("WorldEdit");
+        if (!faweReady) missing.add("FastAsyncWorldEdit");
         if (!wgReady) missing.add("WorldGuard");
         if (missing.isEmpty()) return null;
         return "Dependencies [" + String.join(", ", missing) + "] are not installed.";
-    }
-
-    public ServerHelper serverHelper() {
-        return serverHelper;
     }
 
     public KitService kitService() {
