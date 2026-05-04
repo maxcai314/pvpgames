@@ -10,6 +10,7 @@ import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
 import com.sk89q.worldedit.function.operation.Operations;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.session.ClipboardHolder;
+import com.sk89q.worldedit.util.SideEffectSet;
 import org.bukkit.World;
 import org.slf4j.Logger;
 
@@ -44,7 +45,7 @@ public final class WorldEditSchematicService implements SchematicService {
     @Override
     public boolean schematicExists(SchematicName schematicName) {
         Objects.requireNonNull(schematicName, "schematicName");
-        return resolveFile(schematicName.value()) != null;
+        return resolvePath(schematicName.value()) != null;
     }
 
     @Override
@@ -53,51 +54,55 @@ public final class WorldEditSchematicService implements SchematicService {
         Objects.requireNonNull(targetWorld, "targetWorld");
         Objects.requireNonNull(origin, "origin");
 
-        File file = resolveFile(schematicName.value());
-        if (file == null) {
+        Path path = resolvePath(schematicName.value());
+        if (path == null) {
             throw new SchematicException.NotFound(
                     "Schematic '" + schematicName.value() + "' not found in " + schematicsDir);
         }
 
         // todo: deprecated worldedit logic
-        ClipboardFormat format = ClipboardFormats.findByFile(file);
+        ClipboardFormat format = ClipboardFormats.findByPath(path);
         if (format == null) {
             throw new SchematicException.NotFound(
-                    "Could not detect schematic format for " + file.getName());
+                    "Could not detect schematic format for " + path.toFile().getName());
         }
 
         Clipboard clipboard;
-        try (ClipboardReader reader = format.getReader(new FileInputStream(file))) {
+        try (ClipboardReader reader = format.getReader(new FileInputStream(path.toFile()))) {
             clipboard = reader.read();
         } catch (Exception ex) {
             throw new SchematicException.LoadFailed(
-                    "Failed to read schematic '" + file.getName() + "': " + ex.getMessage(), ex);
+                    "Failed to read schematic '" + path.toFile().getName() + "': " + ex.getMessage(), ex);
         }
 
         com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(targetWorld);
         try (EditSession editSession = WorldEdit.getInstance().newEditSession(weWorld)) {
+            // skip side effects for performance improvement
+            editSession.setSideEffectApplier(SideEffectSet.none());
             Operations.complete(new ClipboardHolder(clipboard)
                     .createPaste(editSession)
                     .to(BlockVector3.at(origin.x(), origin.y(), origin.z()))
                     .ignoreAirBlocks(false)
                     .build());
+            // todo: this still causes a lag spike. not sure if it's because of new chunk generation or worldedit
         } catch (Exception ex) {
             throw new SchematicException.LoadFailed(
-                    "Failed to paste schematic '" + file.getName() + "' into world '"
+                    "Failed to paste schematic '" + path.toFile().getName() + "' into world '"
                             + targetWorld.getName() + "': " + ex.getMessage(), ex);
         }
         logger.info("Pasted schematic '{}' into world '{}' at {},{},{}.",
-                file.getName(), targetWorld.getName(), origin.x(), origin.y(), origin.z());
+                path.toFile().getName(), targetWorld.getName(), origin.x(), origin.y(), origin.z());
     }
 
-    private File resolveFile(String schematicName) {
+    // todo: is this the idiomatic way to access worldedit schematics folder?
+    private Path resolvePath(String schematicName) {
         if (!Files.isDirectory(schematicsDir)) return null;
         // Allow callers to pass a name with or without extension.
         Path direct = schematicsDir.resolve(schematicName);
-        if (Files.isRegularFile(direct)) return direct.toFile();
+        if (Files.isRegularFile(direct)) return direct;
         for (String ext : EXTENSIONS) {
             Path candidate = schematicsDir.resolve(schematicName + ext);
-            if (Files.isRegularFile(candidate)) return candidate.toFile();
+            if (Files.isRegularFile(candidate)) return candidate;
         }
         return null;
     }
