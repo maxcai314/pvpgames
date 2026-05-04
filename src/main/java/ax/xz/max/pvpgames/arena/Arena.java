@@ -5,26 +5,39 @@ import ax.xz.max.pvpgames.schematic.SchematicName;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A persisted arena definition: a named reference to a WorldEdit schematic plus
- * an ordered list of {@link SpawnPoint}s.
+ * A persisted arena definition: a named reference to a WorldEdit schematic, an
+ * ordered list of {@link SpawnPoint}s expressed as offsets from the arena's
+ * allocated origin, and a generic map of WorldGuard flag names to their raw
+ * textual values.
  *
- * <p>Immutable. All "mutators" ({@link #withSchematic(String)},
- * {@link #addSpawn(SpawnPoint)}, {@link #removeSpawnAt(int)}) return a new
- * {@link Arena}; persisting the new value is the service's responsibility.
+ * <p>Immutable. All "mutators" ({@link #addSpawn(SpawnPoint)},
+ * {@link #removeSpawnAt(int)}, {@link #withFlags(Map)}) return a new
+ * {@link Arena}; persisting the new value is the manager's responsibility.
  *
- * <p>{@code createdBy} is the {@link UUID} of the player who created the arena;
- * it may be {@code null} if the arena was created by the console or another
- * non-player source. {@code createdAt} is captured at save time so the info
- * command can display age without rereading file timestamps.
+ * <p>The {@code flags} map is intentionally unstructured: keys are flag names
+ * and values are whatever string the WorldGuard flag's own
+ * {@code parseInput} accepts (typically {@code allow}/{@code deny} for state
+ * flags, {@code true}/{@code false} for boolean flags, integers for integer
+ * flags). Validation is deferred to session creation, where the WorldGuard
+ * service parses each entry and reports unknown flag names or invalid values
+ * via the open-session result type. This keeps the arena format free of
+ * upfront, plugin-version-specific knowledge of which flags exist.
+ *
+ * <p>{@code createdBy} is the {@link UUID} of the player who created the
+ * arena; it may be {@code null} if the arena was created by the console or
+ * another non-player source. {@code createdAt} is captured at save time so
+ * the info command can display age without rereading file timestamps.
  */
 public record Arena(
         ArenaName name,
         SchematicName schematicName,
         List<SpawnPoint> spawns,
+        Map<String, String> flags,
         Instant createdAt,
         UUID createdBy
 ) {
@@ -33,9 +46,11 @@ public record Arena(
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(schematicName, "schematicName");
         Objects.requireNonNull(spawns, "spawns");
+        Objects.requireNonNull(flags, "flags");
         Objects.requireNonNull(createdAt, "createdAt");
         // createdBy is intentionally nullable
         spawns = List.copyOf(spawns);
+        flags = Map.copyOf(flags);
     }
 
     /**
@@ -46,7 +61,7 @@ public record Arena(
         List<SpawnPoint> updated = new ArrayList<>(spawns.size() + 1);
         updated.addAll(spawns);
         updated.add(spawn);
-        return new Arena(name, schematicName, updated, createdAt, createdBy);
+        return new Arena(name, schematicName, updated, flags, createdAt, createdBy);
     }
 
     /**
@@ -66,6 +81,15 @@ public record Arena(
                 updated.add(spawns.get(i));
             }
         }
-        return new Arena(name, schematicName, updated, createdAt, createdBy);
+        return new Arena(name, schematicName, updated, flags, createdAt, createdBy);
+    }
+
+    /**
+     * Returns a copy of this arena with the WorldGuard flag map replaced by
+     * {@code newFlags}.
+     */
+    public Arena withFlags(Map<String, String> newFlags) {
+        Objects.requireNonNull(newFlags, "newFlags");
+        return new Arena(name, schematicName, spawns, newFlags, createdAt, createdBy);
     }
 }

@@ -1,13 +1,15 @@
 package ax.xz.max.pvpgames;
 
+import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
-import ax.xz.max.pvpgames.arena.ArenaService;
 import ax.xz.max.pvpgames.arena.command.ArenaCommand;
-import ax.xz.max.pvpgames.arena.internal.ArenaSessionListener;
-import ax.xz.max.pvpgames.arena.internal.DefaultArenaService;
-import ax.xz.max.pvpgames.arena.internal.FileArenaRepository;
-import ax.xz.max.pvpgames.arena.internal.UnavailableArenaService;
+import ax.xz.max.pvpgames.arena.internal.listener.ArenaSessionListener;
+import ax.xz.max.pvpgames.arena.internal.manager.ArenaAllocator;
+import ax.xz.max.pvpgames.arena.internal.manager.DefaultArenaManager;
+import ax.xz.max.pvpgames.arena.internal.manager.PlayerStateCache;
+import ax.xz.max.pvpgames.arena.internal.manager.UnavailableArenaManager;
+import ax.xz.max.pvpgames.arena.internal.persistence.FileArenaRepository;
 import ax.xz.max.pvpgames.kit.KitRepository;
 import ax.xz.max.pvpgames.kit.KitService;
 import ax.xz.max.pvpgames.kit.command.KitCommand;
@@ -23,7 +25,11 @@ import ax.xz.max.pvpgames.world.UnavailableWorldService;
 import ax.xz.max.pvpgames.world.VoidChunkGenerator;
 import ax.xz.max.pvpgames.world.WorldService;
 import ax.xz.max.pvpgames.world.WorldServiceException;
+import ax.xz.max.pvpgames.worldguard.BukkitWorldGuardService;
+import ax.xz.max.pvpgames.worldguard.UnavailableWorldGuardService;
+import ax.xz.max.pvpgames.worldguard.WorldGuardService;
 import org.bukkit.Server;
+import org.bukkit.World;
 import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -34,24 +40,36 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Plugin entry point.
  *
  * <p>This is the only place we touch {@link Server} and other Bukkit
  * statics; everything else receives its dependencies through constructors.
+ *
+ * <p>Soft dependencies (Multiverse-Core, WorldEdit, WorldGuard) are detected
+ * at enable; missing ones cause the corresponding service to be wired with
+ * its {@code Unavailable*} stub instead of the real implementation. If any
+ * of the three is missing, the arena manager is replaced with
+ * {@link UnavailableArenaManager}; the shared arenas world is then NOT
+ * created because no session can be opened anyway.
  */
 public final class PvpgamesPlugin extends JavaPlugin {
 
     private ServerHelper serverHelper;
     private WorldService worldService;
     private SchematicService schematicService;
+    private WorldGuardService worldGuardService;
 
     private KitRepository kitRepository;
     private KitService kitService;
 
     private ArenaRepository arenaRepository;
-    private ArenaService arenaService;
+    private ArenaManager arenaManager;
+    private World arenaWorld;
+    private boolean ownsArenaWorld;
 
     @Override
     public void onEnable() {
@@ -62,6 +80,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
         PluginManager pm = server.getPluginManager();
         boolean mvReady = pm.isPluginEnabled("Multiverse-Core");
         boolean weReady = pm.isPluginEnabled("WorldEdit");
+        boolean wgReady = pm.isPluginEnabled("WorldGuard");
 
         this.worldService = mvReady
                 ? new MultiverseWorldService(server, this, getSLF4JLogger())
@@ -73,10 +92,9 @@ public final class PvpgamesPlugin extends JavaPlugin {
                 ? new WorldEditSchematicService(schematicsDir, getSLF4JLogger())
                 : new UnavailableSchematicService();
 
-        // Sweep leftover preview worlds from a crashed prior run. The arena
-        // service starts empty on every enable, so anything matching our
-        // prefix is orphaned and should be removed before we let players in.
-        sweepLeftoverArenaWorlds();
+        this.worldGuardService = wgReady
+                ? new BukkitWorldGuardService(getSLF4JLogger())
+                : new UnavailableWorldGuardService();
 
         Path kitsDir = getDataFolder().toPath().resolve("kits");
         try {
@@ -100,22 +118,42 @@ public final class PvpgamesPlugin extends JavaPlugin {
         }
 
         this.arenaRepository = new FileArenaRepository(arenasDir, getSLF4JLogger());
-        // If WorldEdit or Multiverse is missing, swap in an UnavailableArenaService
-        // that returns DependencyMissing for every world-touching op while still
-        // letting CRUD work. This keeps DefaultArenaService free of branching.
-        String missingDeps = describeMissingDependencies(mvReady, weReady);
-        this.arenaService = missingDeps == null
-                ? new DefaultArenaService(
-                        arenaRepository, worldService, schematicService,
-                        server, this, Clock.systemUTC(), getSLF4JLogger())
-                : new UnavailableArenaService(arenaRepository, Clock.systemUTC(), missingDeps);
+
+        String missingDeps = describeMissingDependencies(mvReady, weReady, wgReady);
+        // todo: ugly pattern. use Optional instead
+        if (missingDeps == null) {
+            // todo: abstract this into its own cleanup function
+            // Delete any leftover shared arenas
+            try {
+                worldService.deleteWorld(ArenaName.SHARED_WORLD_NAME);
+            } catch (WorldServiceException ex) {
+                getSLF4JLogger().warn("Failed to clean up shared arenas world on enable: {}",
+                        ex.getMessage());
+            }
+            try {
+                this.arenaWorld = worldService.getOrCreateVoidWorld(ArenaName.SHARED_WORLD_NAME);
+                this.ownsArenaWorld = true;
+            } catch (WorldServiceException ex) {
+                getSLF4JLogger().error("Failed to create shared arenas world; disabling plugin.", ex);
+                server.getPluginManager().disablePlugin(this);
+                return;
+            }
+            ArenaAllocator allocator = new ArenaAllocator(arenaWorld);
+            PlayerStateCache stateCache = new PlayerStateCache(server, this);
+            this.arenaManager = new DefaultArenaManager(
+                    arenaRepository, schematicService, worldGuardService,
+                    allocator, stateCache, arenaWorld,
+                    server, Clock.systemUTC(), getSLF4JLogger());
+        } else {
+            this.arenaManager = new UnavailableArenaManager(arenaRepository, Clock.systemUTC(), missingDeps);
+        }
 
         // register listeners
-        server.getPluginManager().registerEvents(new ArenaSessionListener(arenaService), this);
+        server.getPluginManager().registerEvents(new ArenaSessionListener(arenaManager), this);
 
         // register commands
         new KitCommand(kitService, serverHelper).register(getLifecycleManager());
-        new ArenaCommand(arenaService, serverHelper, server).register(getLifecycleManager());
+        new ArenaCommand(arenaManager, serverHelper, server).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");
         if (weReady) {
@@ -124,9 +162,14 @@ public final class PvpgamesPlugin extends JavaPlugin {
             getSLF4JLogger().warn("WorldEdit plugin not found; arena schematic features disabled.");
         }
         if (mvReady) {
-            getSLF4JLogger().info("Multiverse-Core plugin found; arena preview worlds enabled.");
+            getSLF4JLogger().info("Multiverse-Core plugin found; shared arenas world enabled.");
         } else {
-            getSLF4JLogger().warn("Multiverse-Core plugin not found; arena preview worlds disabled.");
+            getSLF4JLogger().warn("Multiverse-Core plugin not found; shared arenas world disabled.");
+        }
+        if (wgReady) {
+            getSLF4JLogger().info("WorldGuard plugin found; arena region enforcement enabled.");
+        } else {
+            getSLF4JLogger().warn("WorldGuard plugin not found; arena session creation disabled.");
         }
 
         getSLF4JLogger().info("Pvpgames enabled with {} kit(s) and {} arena(s) loaded.",
@@ -135,19 +178,30 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Restore every cached pre-session player state and tear down every
-        // session world. Multiverse loads before us (softdepend) and disables
-        // after us, so its API is still alive here.
-        if (arenaService != null) {
-            arenaService.shutdown();
+        // Restore every cached pre-session player state and close every
+        // session BEFORE the shared world is deleted. Multiverse, WorldEdit,
+        // and WorldGuard load before us (softdepend) and disable after us, so
+        // their APIs are still alive here.
+        if (arenaManager != null) {
+            arenaManager.shutdown();
+        }
+        if (ownsArenaWorld && worldService != null && worldGuardService != null) {
+            try {
+                getSLF4JLogger().info("Deleting world {}", ArenaName.SHARED_WORLD_NAME);
+                worldGuardService.shutdown();
+                worldService.deleteWorld(ArenaName.SHARED_WORLD_NAME);
+            } catch (WorldServiceException ex) {
+                getSLF4JLogger().warn("Failed to delete shared arenas world on disable: {}", ex.getMessage());
+            }
         }
     }
 
     /**
      * Paper / Bukkit asks the plugin for a {@link ChunkGenerator} when a world
-     * is created with {@code generator: <plugin-name>}. {@link MultiverseWorldService}
-     * passes our plugin name when creating session worlds, so this routes Multiverse
-     * to the {@link VoidChunkGenerator} that produces empty void worlds.
+     * is created with {@code generator: <plugin-name>}.
+     * {@link MultiverseWorldService} passes our plugin name when creating the
+     * shared arenas world, so this routes Multiverse to the
+     * {@link VoidChunkGenerator} that produces empty void worlds.
      */
     @Override
     public @Nullable ChunkGenerator getDefaultWorldGenerator(@NotNull String worldName, @Nullable String id) {
@@ -155,27 +209,16 @@ public final class PvpgamesPlugin extends JavaPlugin {
     }
 
     /**
-     * @return human-readable list of missing soft-dependencies, or {@code null}
-     *         when all are present
+     * @return human-readable list of missing soft-dependencies, or
+     *         {@code null} when all are present
      */
-    private static String describeMissingDependencies(boolean mvReady, boolean weReady) {
-        if (!mvReady && !weReady) return "Multiverse-Core and WorldEdit are not installed.";
-        if (!mvReady) return "Multiverse-Core is not installed.";
-        if (!weReady) return "WorldEdit is not installed.";
-        return null;
-    }
-
-    private void sweepLeftoverArenaWorlds() {
-        if (worldService == null) return;
-        for (String name : worldService.findWorldsByPrefix(ArenaName.WORLD_PREFIX)) {
-            try {
-                worldService.deleteWorld(name);
-                getSLF4JLogger().info("Cleaned up leftover arena world '{}' on enable.", name);
-            } catch (WorldServiceException ex) {
-                getSLF4JLogger().warn("Failed to clean up leftover arena world '{}' on enable: {}",
-                        name, ex.getMessage());
-            }
-        }
+    private static String describeMissingDependencies(boolean mvReady, boolean weReady, boolean wgReady) {
+        List<String> missing = new ArrayList<>(3);
+        if (!mvReady) missing.add("Multiverse-Core");
+        if (!weReady) missing.add("WorldEdit");
+        if (!wgReady) missing.add("WorldGuard");
+        if (missing.isEmpty()) return null;
+        return "Dependencies [" + String.join(", ", missing) + "] are not installed.";
     }
 
     public ServerHelper serverHelper() {
@@ -186,8 +229,8 @@ public final class PvpgamesPlugin extends JavaPlugin {
         return kitService;
     }
 
-    public ArenaService arenaService() {
-        return arenaService;
+    public ArenaManager arenaManager() {
+        return arenaManager;
     }
 
     public WorldService worldService() {
@@ -196,5 +239,9 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     public SchematicService schematicService() {
         return schematicService;
+    }
+
+    public WorldGuardService worldGuardService() {
+        return worldGuardService;
     }
 }

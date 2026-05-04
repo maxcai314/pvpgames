@@ -13,6 +13,7 @@ load: POSTWORLD
 # before calling into them in code.
 softdepend:
   - WorldEdit
+  - WorldGuard
   - Multiverse-Core
 
 permissions:

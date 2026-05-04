@@ -17,11 +17,12 @@ import java.util.Objects;
 public record ArenaName(String value) {
 
     /**
-     * Common prefix for the temporary Multiverse worlds created by
-     * {@code /arena preview}. Plugin enable / disable sweeps every loaded world
-     * whose name starts with this prefix.
+     * Name of the single Multiverse world that hosts every active arena
+     * session under the rewritten architecture. Created at plugin enable and
+     * deleted at plugin disable; sessions are pasted into this world at
+     * non-overlapping origins handed out by the arena allocator.
      */
-    public static final String WORLD_PREFIX = "pvpgames_arena_";
+    public static final String SHARED_WORLD_NAME = "pvpgames_arenas";
 
     public ArenaName {
         value = ResourceNames.validate(value, "Arena");
@@ -53,10 +54,4 @@ public record ArenaName(String value) {
         return arenasDir.resolve(value + extension);
     }
 
-    /**
-     * Deterministic Multiverse world name for this arena's preview world.
-     */
-    public String worldName() {
-        return WORLD_PREFIX + value;
-    }
 }

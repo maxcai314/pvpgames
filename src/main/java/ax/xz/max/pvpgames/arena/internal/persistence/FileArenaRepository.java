@@ -1,4 +1,4 @@
-package ax.xz.max.pvpgames.arena.internal;
+package ax.xz.max.pvpgames.arena.internal.persistence;
 
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaName;
@@ -22,6 +22,7 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -38,6 +39,25 @@ import java.util.concurrent.ConcurrentMap;
  * {@code FileKitRepository} in its eager-load + atomic-write strategy: all
  * arenas are loaded into a {@link ConcurrentHashMap} on construction; writes
  * update the cache and flush to disk via write-temp + {@code ATOMIC_MOVE}.
+ *
+ * <p>Schema:
+ * <pre>
+ * name: stadium
+ * schematic: stadium_v3
+ * created-at: 2026-04-21T13:42:11.523Z
+ * created-by: 0a8e1f6a-...
+ * spawns:
+ *   - { x: 0.5, y: 65.0, z: 0.5, yaw: 0.0, pitch: 0.0 }
+ * flags:
+ *   pvp: allow
+ *   exit: deny
+ *   natural-health-regen: deny
+ * </pre>
+ *
+ * <p>The {@code flags} section is optional; missing maps to the empty map.
+ * Spawn coordinates are stored as offsets from the session origin under the
+ * rewritten arena system, but pre-rewrite YAML files round-trip unchanged
+ * because legacy schematics were always pasted at {@code (0, 0, 0)}.
  */
 public final class FileArenaRepository implements ArenaRepository {
 
@@ -49,6 +69,7 @@ public final class FileArenaRepository implements ArenaRepository {
     private static final String KEY_CREATED_AT = "created-at";
     private static final String KEY_CREATED_BY = "created-by";
     private static final String KEY_SPAWNS     = "spawns";
+    private static final String KEY_FLAGS      = "flags";
 
     private static final String SPAWN_KEY_X     = "x";
     private static final String SPAWN_KEY_Y     = "y";
@@ -69,8 +90,8 @@ public final class FileArenaRepository implements ArenaRepository {
 
     /**
      * Scans {@link #arenasDir} and loads every {@code *.yml} file into the
-     * cache. Files that fail to parse are logged and skipped; one corrupt arena
-     * must not prevent the plugin from starting.
+     * cache. Files that fail to parse are logged and skipped; one corrupt
+     * arena must not prevent the plugin from starting.
      */
     public void loadAllFromFileSystem() {
         cache.clear();
@@ -158,6 +179,7 @@ public final class FileArenaRepository implements ArenaRepository {
             yaml.set(KEY_CREATED_BY, arena.createdBy().toString());
         }
         yaml.set(KEY_SPAWNS, encodeSpawns(arena.spawns()));
+        yaml.set(KEY_FLAGS, encodeFlags(arena.flags()));
 
         yaml.save(temp.toFile());
         try {
@@ -177,6 +199,16 @@ public final class FileArenaRepository implements ArenaRepository {
                     SPAWN_KEY_YAW, (double) spawn.yaw(),
                     SPAWN_KEY_PITCH, (double) spawn.pitch()));
         }
+        return out;
+    }
+
+    /**
+     * Encodes the flag map as a {@link LinkedHashMap} so insertion order is
+     * preserved in the serialised YAML; this keeps diffs stable across saves.
+     */
+    private static Map<String, Object> encodeFlags(Map<String, String> flags) {
+        Map<String, Object> out = new LinkedHashMap<>(flags.size());
+        out.putAll(flags);
         return out;
     }
 
@@ -204,8 +236,9 @@ public final class FileArenaRepository implements ArenaRepository {
         Instant createdAt = readInstant(yaml.getString(KEY_CREATED_AT));
         UUID createdBy = readUuid(yaml.getString(KEY_CREATED_BY));
         List<SpawnPoint> spawns = readSpawns(yaml);
+        Map<String, String> flags = readFlags(yaml);
 
-        return new Arena(name, schematic, spawns, createdAt, createdBy);
+        return new Arena(name, schematic, spawns, flags, createdAt, createdBy);
     }
 
     private static List<SpawnPoint> readSpawns(YamlConfiguration yaml) throws InvalidConfigurationException {
@@ -231,6 +264,29 @@ public final class FileArenaRepository implements ArenaRepository {
                     requireDouble(map, SPAWN_KEY_Z, i),
                     (float) requireDouble(map, SPAWN_KEY_YAW, i),
                     (float) requireDouble(map, SPAWN_KEY_PITCH, i)));
+        }
+        return out;
+    }
+
+    /**
+     * Reads the optional {@code flags} section. Values are coerced to
+     * {@link String} via {@link String#valueOf(Object)} so admins can write
+     * unquoted booleans / numbers in YAML and have them parsed correctly by
+     * WorldGuard's flag registry at session-open time.
+     */
+    private static Map<String, String> readFlags(YamlConfiguration yaml) {
+        ConfigurationSection section = yaml.getConfigurationSection(KEY_FLAGS);
+        if (section == null) {
+            return Map.of();
+        }
+        Map<String, Object> raw = section.getValues(false);
+        if (raw.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> out = new LinkedHashMap<>(raw.size());
+        for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            if (entry.getValue() == null) continue;
+            out.put(entry.getKey(), String.valueOf(entry.getValue()));
         }
         return out;
     }

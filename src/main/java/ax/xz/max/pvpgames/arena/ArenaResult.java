@@ -1,11 +1,9 @@
 package ax.xz.max.pvpgames.arena;
 
-import org.bukkit.World;
-
 import java.util.List;
 
 /**
- * Outcomes of {@link ArenaService} operations.
+ * Outcomes of {@link ArenaManager} and {@link ArenaSession} operations.
  *
  * <p>Sealed result types let command handlers exhaustively pattern-match on
  * each operation's failure surface and emit precise messages without juggling
@@ -18,7 +16,7 @@ public sealed interface ArenaResult {
         String message();
     }
 
-    /** Outcome of a {@code create} operation. */
+    /** Outcome of an arena-create operation. */
     sealed interface CreateResult extends ArenaResult {
         record Created(Arena arena, boolean overwrote) implements CreateResult {}
         record InvalidName(String reason) implements CreateResult {}
@@ -28,7 +26,7 @@ public sealed interface ArenaResult {
         }
     }
 
-    /** Outcome of a {@code delete} operation. */
+    /** Outcome of an arena-delete operation. */
     sealed interface DeleteResult extends ArenaResult {
         record Deleted(ArenaName name) implements DeleteResult {}
         record NotFound(String requestedName) implements DeleteResult {}
@@ -39,69 +37,70 @@ public sealed interface ArenaResult {
     }
 
     /**
-     * Outcome of a {@code preview} operation: a brand-new session is created
-     * for the named arena and the caller is joined to it.
+     * Outcome of {@link ArenaManager#openSession}: a session is allocated a
+     * grid slot in the shared world, the schematic is pasted at that origin,
+     * a WorldGuard region is registered, and the arena's flags are applied.
      */
-    sealed interface PreviewResult extends ArenaResult {
-        record Started(ArenaSession session, World world, boolean noSpawnsYet) implements PreviewResult {}
-        record InvalidName(String reason) implements PreviewResult {}
-        record NotFound(String requestedName) implements PreviewResult {}
-        record SchematicMissing(String schematicName) implements PreviewResult {}
-        record SchematicLoadFailed(String schematicName, String message) implements PreviewResult {}
-        record WorldFailed(String message) implements PreviewResult {}
-        /** WorldEdit or Multiverse-Core is not installed. */
-        record DependencyMissing(String message) implements PreviewResult {}
+    sealed interface OpenSessionResult extends ArenaResult {
+        record Opened(ArenaSession session, boolean noSpawnsYet) implements OpenSessionResult {}
+        record InvalidName(String reason) implements OpenSessionResult {}
+        record NotFound(String requestedName) implements OpenSessionResult {}
+        record SchematicMissing(String schematicName) implements OpenSessionResult {}
+        record SchematicLoadFailed(String schematicName, String message) implements OpenSessionResult {}
+        record AllocatorExhausted(int maxSlots) implements OpenSessionResult {}
+        record RegionFailed(String message) implements OpenSessionResult {}
+        record InvalidFlag(String flagName, String reason) implements OpenSessionResult {}
+        /** Multiverse-Core, WorldEdit, or WorldGuard is not installed. */
+        record DependencyMissing(String message) implements OpenSessionResult {}
+    }
+
+    /** Outcome of {@link ArenaManager#closeSession}. */
+    sealed interface CloseSessionResult extends ArenaResult {
+        record Closed(long sessionId) implements CloseSessionResult {}
+        record NotFound(long sessionId) implements CloseSessionResult {}
     }
 
     /**
-     * Outcome of a {@code join} operation: the caller is added to an existing
-     * session.
+     * Outcome of {@link ArenaSession#joinPlayer}: the player's pre-session
+     * state is captured (if not already cached), a clean baseline is applied,
+     * and they are teleported to the first spawn (or the session origin if
+     * the spawn list is empty).
      */
     sealed interface JoinResult extends ArenaResult {
         record Joined(ArenaSession session, boolean noSpawnsYet) implements JoinResult {}
-        record SessionNotFound(long sessionId) implements JoinResult {}
-        record DependencyMissing(String message) implements JoinResult {}
     }
 
-    /** Outcome of an {@code addSpawn} operation. */
+    /** Outcome of {@link ArenaSession#leavePlayer}. */
+    sealed interface LeaveResult extends ArenaResult {
+        record Returned() implements LeaveResult {}
+        record NoActiveSession() implements LeaveResult {}
+    }
+
+    /** Outcome of an add-spawn operation on a session. */
     sealed interface AddSpawnResult extends ArenaResult {
         record Added(Arena arena, int oneBasedIndex) implements AddSpawnResult {}
-        record NotInArenaWorld() implements AddSpawnResult {}
-        record ArenaMissing(String requestedName) implements AddSpawnResult {}
         record IoError(String message) implements AddSpawnResult, IoFailure {
             @Override public String message() { return message; }
         }
     }
 
-    /** Outcome of a {@code listSpawns} operation. */
+    /** Outcome of a list-spawns operation on a session. */
     sealed interface ListSpawnResult extends ArenaResult {
         record Listed(Arena arena, List<SpawnPoint> spawns) implements ListSpawnResult {}
-        record NotInArenaWorld() implements ListSpawnResult {}
-        record ArenaMissing(String requestedName) implements ListSpawnResult {}
     }
 
-    /** Outcome of a {@code visitSpawn} operation. */
+    /** Outcome of a visit-spawn operation on a session. */
     sealed interface VisitSpawnResult extends ArenaResult {
         record Visited(Arena arena, int oneBasedIndex, SpawnPoint spawn) implements VisitSpawnResult {}
-        record NotInArenaWorld() implements VisitSpawnResult {}
-        record ArenaMissing(String requestedName) implements VisitSpawnResult {}
         record IndexOutOfRange(int requested, int size) implements VisitSpawnResult {}
     }
 
-    /** Outcome of a {@code removeSpawn} operation. */
+    /** Outcome of a remove-spawn operation on a session. */
     sealed interface RemoveSpawnResult extends ArenaResult {
         record Removed(Arena arena, int oneBasedIndex, SpawnPoint removed) implements RemoveSpawnResult {}
-        record NotInArenaWorld() implements RemoveSpawnResult {}
-        record ArenaMissing(String requestedName) implements RemoveSpawnResult {}
         record IndexOutOfRange(int requested, int size) implements RemoveSpawnResult {}
         record IoError(String message) implements RemoveSpawnResult, IoFailure {
             @Override public String message() { return message; }
         }
-    }
-
-    /** Outcome of a {@code leave} operation. */
-    sealed interface LeaveResult extends ArenaResult {
-        record Returned() implements LeaveResult {}
-        record NoActiveSession() implements LeaveResult {}
     }
 }
