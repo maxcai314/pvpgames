@@ -4,6 +4,7 @@ import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.ArenaService;
 import ax.xz.max.pvpgames.arena.command.ArenaCommand;
+import ax.xz.max.pvpgames.arena.internal.ArenaSessionListener;
 import ax.xz.max.pvpgames.arena.internal.DefaultArenaService;
 import ax.xz.max.pvpgames.arena.internal.FileArenaRepository;
 import ax.xz.max.pvpgames.arena.internal.UnavailableArenaService;
@@ -108,6 +109,9 @@ public final class PvpgamesPlugin extends JavaPlugin {
                         arenaRepository, worldService, schematicService,
                         server, Clock.systemUTC(), getSLF4JLogger())
                 : new UnavailableArenaService(arenaRepository, Clock.systemUTC(), missingDeps);
+
+        // register listeners
+        server.getPluginManager().registerEvents(new ArenaSessionListener(arenaService), this);
 
         // register commands
         new KitCommand(kitService, serverHelper).register(getLifecycleManager());

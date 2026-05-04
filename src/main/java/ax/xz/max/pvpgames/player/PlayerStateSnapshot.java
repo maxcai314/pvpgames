@@ -150,6 +150,7 @@ public record PlayerStateSnapshot(
         Objects.requireNonNull(player, "player");
 
         if (location != null) {
+            player.eject();
             player.teleport(location);
         }
         player.setGameMode(gameMode);

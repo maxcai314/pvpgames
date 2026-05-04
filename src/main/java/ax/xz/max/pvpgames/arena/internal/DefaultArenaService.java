@@ -241,7 +241,7 @@ public final class DefaultArenaService implements ArenaService {
 
         Location target;
         if (arena != null && !arena.spawns().isEmpty()) {
-            target = arena.spawns().get(0).toLocation(sessionWorld);
+            target = arena.spawns().getFirst().toLocation(sessionWorld);
         } else {
             target = sessionWorld.getSpawnLocation();
         }
