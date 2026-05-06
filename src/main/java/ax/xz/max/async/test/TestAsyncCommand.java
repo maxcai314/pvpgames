@@ -26,8 +26,7 @@ import java.util.Objects;
  *
  * <p>The shape of the chain is:
  * <ol>
- *   <li>Async: build a {@link TestInfo} carrying the player and a random
- *       integer between 1 and 5 inclusive.</li>
+ *   <li>Async: build a {@link TestInfo} carrying the player and a random integer.</li>
  *   <li>Main:  send the player a chat message with that number.</li>
  *   <li>Async: sleep 500ms; forward the value unchanged.</li>
  *   <li>Recursive {@code thenComposeAsync} loop until {@code n} reaches zero:
@@ -79,7 +78,7 @@ public final class TestAsyncCommand {
 
         // Initial chain: async supply -> main message -> async sleep ->
         // recursive loop driven by thenComposeAsync.
-        Promise.supplyAsync(() -> new TestInfo(player, (int) (Math.random() * 5) + 1), async)
+        Promise.supplyAsync(() -> new TestInfo(player, (int) (Math.random() * 5) + 5), async)
                 .thenApplyAsync(info -> {
                     info.p().sendMessage(Component.text(
                             "[testasync] starting with n = " + info.n(), NamedTextColor.AQUA));
