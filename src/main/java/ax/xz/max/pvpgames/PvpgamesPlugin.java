@@ -1,5 +1,6 @@
 package ax.xz.max.pvpgames;
 
+import ax.xz.max.async.GameScheduler;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
@@ -18,6 +19,7 @@ import ax.xz.max.pvpgames.kit.internal.FileKitRepository;
 import ax.xz.max.pvpgames.schematic.SchematicService;
 import ax.xz.max.pvpgames.schematic.UnavailableSchematicService;
 import ax.xz.max.pvpgames.schematic.WorldEditSchematicService;
+import ax.xz.max.async.test.TestAsyncCommand;
 import ax.xz.max.pvpgames.world.MultiverseWorldService;
 import ax.xz.max.pvpgames.world.UnavailableWorldService;
 import ax.xz.max.pvpgames.world.VoidChunkGenerator;
@@ -56,6 +58,8 @@ import java.util.List;
  */
 public final class PvpgamesPlugin extends JavaPlugin {
 
+    private GameScheduler gameScheduler;
+
     private WorldService worldService;
     private SchematicService schematicService;
     private WorldGuardService worldGuardService;
@@ -72,13 +76,12 @@ public final class PvpgamesPlugin extends JavaPlugin {
     public void onEnable() {
         Server server = getServer();
 
+        // used as a dependency in systems for scheduling async tasks
+        this.gameScheduler = new GameScheduler(this);
+
         PluginManager pm = server.getPluginManager();
         boolean mvReady = pm.isPluginEnabled("Multiverse-Core");
-        // We specifically require FastAsyncWorldEdit, not vanilla WorldEdit:
-        // the schematic service runs the paste off the main thread, which is
-        // only safe with FAWE. Vanilla WorldEdit installed alone would crash
-        // the async path with thread-safety errors, so we treat that case as
-        // "schematic features unavailable".
+        // We specifically require FastAsyncWorldEdit for asynchronous pasting
         boolean faweReady = pm.isPluginEnabled("FastAsyncWorldEdit");
         boolean wgReady = pm.isPluginEnabled("WorldGuard");
 
@@ -154,6 +157,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
         // register commands
         new KitCommand(kitService, server).register(getLifecycleManager());
         new ArenaCommand(arenaManager, server).register(getLifecycleManager());
+        new TestAsyncCommand(gameScheduler).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");
         if (faweReady) {
