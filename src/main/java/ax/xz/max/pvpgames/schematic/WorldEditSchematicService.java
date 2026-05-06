@@ -1,5 +1,8 @@
 package ax.xz.max.pvpgames.schematic;
 
+import ax.xz.max.async.GameScheduler;
+import ax.xz.max.async.Promise;
+import ax.xz.max.async.Result;
 import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.WorldEdit;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
@@ -10,9 +13,7 @@ import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
 import com.sk89q.worldedit.function.operation.Operations;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.session.ClipboardHolder;
-import com.sk89q.worldedit.util.SideEffectSet;
 import org.bukkit.World;
-import org.bukkit.plugin.Plugin;
 import org.slf4j.Logger;
 
 import java.io.FileInputStream;
@@ -24,24 +25,24 @@ import java.util.Objects;
 /**
  * {@link SchematicService} backed by FastAsyncWorldEdit (FAWE).
  *
- * <p>FAWE is a fork of WorldEdit that exposes the same API but also makes
- * block-touching operations safe to call from non-main threads. This service
- * relies on that property to schedule the actual paste on Bukkit's async
- * executor; the {@link #pasteAtOrigin} call returns as soon as the schematic
- * file has been resolved and its format has been detected, and the paste
- * itself happens in the background. Errors raised during the async paste are
- * logged but cannot be propagated to the caller.
+ * <p>FAWE forks WorldEdit and exposes the same {@code com.sk89q.worldedit}
+ * API surface, but adds two things we rely on:
+ * <ul>
+ *   <li>{@code EditSessionBuilder.build()} called from a non-main thread
+ *       installs a parallel queue extent, which is what makes the actual
+ *       block writes safe and fast off the main thread. We therefore build
+ *       (and use) the {@code EditSession} entirely inside the async
+ *       supplier.</li>
+ *   <li>Builder options {@code fastMode}, {@code changeSetNull}, and
+ *       {@code limitUnlimited} skip lighting / neighbor updates, history
+ *       recording, and per-actor block limits respectively. Together these
+ *       are FAWE's idiomatic equivalent of running {@code //perf off}.</li>
+ * </ul>
  *
- * <p>The service still compiles against vanilla WorldEdit's classes; FAWE is
- * a drop-in replacement at runtime. If a server is running vanilla WorldEdit
- * instead of FAWE, the async paste will fail with thread-safety errors. The
- * plugin's {@code softdepend} therefore lists both names and the runServer
- * task installs FAWE specifically.
- *
- * <p>Resolves schematic short-names against a configured directory (typically
- * {@code plugins/WorldEdit/schematics/}) and supports any extension WorldEdit
- * recognises ({@code .schem}, {@code .schematic}, etc.). The file name on
- * disk is found by trying each extension in order.
+ * <p>The whole paste (file resolution, format detection, clipboard read,
+ * block writes) runs inside a single {@link Promise#supplyAsync} on the
+ * {@link GameScheduler#asyncExecutor() async executor}; the caller composes
+ * follow-up work onto the returned promise.
  */
 public final class WorldEditSchematicService implements SchematicService {
 
@@ -49,12 +50,12 @@ public final class WorldEditSchematicService implements SchematicService {
     private static final List<String> EXTENSIONS = List.of(".schem", ".schematic");
 
     private final Path schematicsDir;
-    private final Plugin plugin;
+    private final GameScheduler scheduler;
     private final Logger logger;
 
-    public WorldEditSchematicService(Path schematicsDir, Plugin plugin, Logger logger) {
+    public WorldEditSchematicService(Path schematicsDir, GameScheduler scheduler, Logger logger) {
         this.schematicsDir = Objects.requireNonNull(schematicsDir, "schematicsDir");
-        this.plugin = Objects.requireNonNull(plugin, "plugin");
+        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
@@ -65,63 +66,74 @@ public final class WorldEditSchematicService implements SchematicService {
     }
 
     @Override
-    public void pasteAtOrigin(SchematicName schematicName, World targetWorld, BlockVec3 origin) throws SchematicException {
+    public Promise<Result<Void, SchematicError>> pasteAtOrigin(
+            SchematicName schematicName, World targetWorld, BlockVec3 origin) {
         Objects.requireNonNull(schematicName, "schematicName");
         Objects.requireNonNull(targetWorld, "targetWorld");
         Objects.requireNonNull(origin, "origin");
 
-        Path path = resolvePath(schematicName.value());
-        if (path == null) {
-            throw new SchematicException.NotFound(
-                    "Schematic '" + schematicName.value() + "' not found in " + schematicsDir);
-        }
-
-        // findByFile is the only alternative supported by FAWE
-        ClipboardFormat format = ClipboardFormats.findByFile(path.toFile());
-        if (format == null) {
-            throw new SchematicException.NotFound(
-                    "Could not detect schematic format for " + path.toFile().getName());
-        }
-
-        // run worldedit task asynchronously using FAWE
+        // Adapt the Bukkit world to a WE world up front; the resulting
+        // wrapper is safe to use from the async thread.
         com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(targetWorld);
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin,
-                () -> runPaste(path, format, weWorld, targetWorld.getName(), origin));
+
+        return Promise.supplyAsync(
+                () -> doPaste(schematicName, weWorld, targetWorld.getName(), origin),
+                scheduler.asyncExecutor());
     }
 
     /**
-     * Reads the schematic file and pastes it. Always invoked from a
-     * non-main thread; FAWE makes the block-touching calls inside the
-     * {@link EditSession} safe to run there.
+     * Resolves the file, reads the clipboard, and pastes into the world.
+     * Always invoked from a non-main thread; building the EditSession here
+     * is what causes FAWE to install its parallel queue.
      */
-    private void runPaste(Path path, ClipboardFormat format,
-                          com.sk89q.worldedit.world.World weWorld,
-                          String worldName, BlockVec3 origin) {
+    private Result<Void, SchematicError> doPaste(
+            SchematicName name,
+            com.sk89q.worldedit.world.World weWorld,
+            String worldName,
+            BlockVec3 origin) {
+        Path path = resolvePath(name.value());
+        if (path == null) {
+            return new Result.Err<>(new SchematicError.NotFound(
+                    "Schematic '" + name.value() + "' not found in " + schematicsDir));
+        }
+
+        ClipboardFormat format = ClipboardFormats.findByFile(path.toFile());
+        if (format == null) {
+            return new Result.Err<>(new SchematicError.NotFound(
+                    "Could not detect schematic format for " + path.toFile().getName()));
+        }
+
         Clipboard clipboard;
         try (ClipboardReader reader = format.getReader(new FileInputStream(path.toFile()))) {
             clipboard = reader.read();
         } catch (Exception ex) {
-            logger.error("Failed to read schematic '{}': {}", path.toFile().getName(), ex.getMessage(), ex);
-            return;
+            logger.info("Failed to read schematic {}: {}", path.toFile().getName(), ex.getMessage());
+            return new Result.Err<>(new SchematicError.LoadFailed(
+                    "Failed to read schematic '" + path.toFile().getName() + "': " + ex.getMessage()));
         }
-        try (EditSession editSession = WorldEdit.getInstance().newEditSession(weWorld)) {
-            // skip side effects for performance
-            editSession.setSideEffectApplier(SideEffectSet.none());
+
+        try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
+                .world(weWorld)
+                .fastMode(true)
+                .changeSetNull()
+                .limitUnlimited()
+                .build()) {
             Operations.complete(new ClipboardHolder(clipboard)
                     .createPaste(editSession)
                     .to(BlockVector3.at(origin.x(), origin.y(), origin.z()))
                     .ignoreAirBlocks(false)
                     .build());
         } catch (Exception ex) {
-            logger.error("Failed to paste schematic '{}' into world '{}': {}",
-                    path.toFile().getName(), worldName, ex.getMessage(), ex);
-            return;
+            return new Result.Err<>(new SchematicError.LoadFailed(
+                    "Failed to paste schematic '" + path.toFile().getName() + "' into world '"
+                            + worldName + "': " + ex.getMessage()));
         }
+
         logger.info("Pasted schematic '{}' into world '{}' at {},{},{}.",
                 path.toFile().getName(), worldName, origin.x(), origin.y(), origin.z());
+        return new Result.Ok<>(null);
     }
 
-    // todo: is this the idiomatic way to access worldedit schematics folder?
     private Path resolvePath(String schematicName) {
         if (!Files.isDirectory(schematicsDir)) return null;
         // Allow callers to pass a name with or without extension.

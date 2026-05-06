@@ -1,5 +1,6 @@
 package ax.xz.max.pvpgames.arena;
 
+import ax.xz.max.async.Promise;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -40,16 +41,20 @@ public interface ArenaManager {
     // ---- session lifecycle --------------------------------------------
 
     /**
-     * Allocates a grid slot in the shared world, pastes the named arena's
-     * schematic at that origin, registers a WorldGuard region around it, and
-     * applies the arena's flag map. The returned session is registered in the
-     * pool until {@link #closeSession} or {@link #shutdown} is called.
+     * Asynchronously opens a session for the named arena.
      *
-     * <p>The caller is responsible for joining players to the returned
-     * session via {@link ArenaSession#joinPlayer}; this method does NOT
-     * teleport anyone.
+     * <p>Pipeline: validate the name and allocate a grid slot on the main
+     * thread; paste the schematic on a background thread; register the
+     * WorldGuard region, apply flags, and add the session to the pool back
+     * on the main thread. The returned promise completes once every step is
+     * done, so by the time the caller observes
+     * {@link ArenaResult.OpenSessionResult.Opened} the schematic is fully
+     * pasted and the session is safe to teleport players into.
+     *
+     * <p>The caller is responsible for joining players via
+     * {@link ArenaSession#joinPlayer}; this method does NOT teleport anyone.
      */
-    ArenaResult.OpenSessionResult openSession(String rawArenaName);
+    Promise<ArenaResult.OpenSessionResult> openSession(String rawArenaName);
 
     /**
      * Removes a session from the pool: the WorldGuard region is removed, the

@@ -1,5 +1,6 @@
 package ax.xz.max.pvpgames.arena.command;
 
+import ax.xz.max.async.GameScheduler;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
@@ -73,10 +74,12 @@ public final class ArenaCommand {
 
     private final ArenaManager manager;
     private final Server server;
+    private final GameScheduler scheduler;
 
-    public ArenaCommand(ArenaManager manager, Server server) {
+    public ArenaCommand(ArenaManager manager, Server server, GameScheduler scheduler) {
         this.manager = Objects.requireNonNull(manager, "manager");
         this.server = Objects.requireNonNull(server, "server");
+        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     }
 
     /**
@@ -263,12 +266,19 @@ public final class ArenaCommand {
         if (maybe.isEmpty()) return 0;
         Player player = maybe.get();
         String rawName = StringArgumentType.getString(ctx, "name");
-        // Heads-up before the (potentially slow) schematic paste; the
-        // success/error message comes after.
+        // Send message before starting async task
         player.sendMessage(MSG.info("Opening new session for arena ")
                 .append(MSG.highlight(rawName))
                 .append(Component.text("...", NamedTextColor.GRAY)));
-        return switch (manager.openSession(rawName)) {
+
+        // async creation of ArenaSession and then reply to player
+        manager.openSession(rawName)
+                .thenAcceptAsync(result -> reportOpenSession(player, result), scheduler.mainExecutor());
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private void reportOpenSession(Player player, ArenaResult.OpenSessionResult result) {
+        switch (result) {
             case ArenaResult.OpenSessionResult.Opened(ArenaSession session, boolean noSpawnsYet) -> {
                 session.joinPlayer(player);
                 player.sendMessage(MSG.success("Opened session ")
@@ -281,41 +291,24 @@ public final class ArenaCommand {
                             .append(MSG.highlight("/arena addspawn"))
                             .append(Component.text(" to add one.", NamedTextColor.GRAY)));
                 }
-                yield Command.SINGLE_SUCCESS;
             }
-            case ArenaResult.OpenSessionResult.NotFound(String requested) -> {
-                player.sendMessage(MSG.error("No arena named '" + requested + "' exists."));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.InvalidName(String reason) -> {
-                player.sendMessage(MSG.error(reason));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.SchematicMissing(String name) -> {
-                player.sendMessage(MSG.error("Schematic '" + name + "' was not found."));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.SchematicLoadFailed(String name, String message) -> {
-                player.sendMessage(MSG.error("Could not load schematic '" + name + "': " + message));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.AllocatorExhausted(int max) -> {
-                player.sendMessage(MSG.error("All " + max + " arena slots are in use; close a session and try again."));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.RegionFailed(String message) -> {
-                player.sendMessage(MSG.error("Could not register WorldGuard region: " + message));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.InvalidFlag(String flagName, String message) -> {
-                player.sendMessage(MSG.error("Could not apply flag '" + flagName + "': " + message));
-                yield 0;
-            }
-            case ArenaResult.OpenSessionResult.DependencyMissing(String message) -> {
-                player.sendMessage(MSG.error("Dependency missing: " + message));
-                yield 0;
-            }
-        };
+            case ArenaResult.OpenSessionResult.NotFound(String requested) ->
+                    player.sendMessage(MSG.error("No arena named '" + requested + "' exists."));
+            case ArenaResult.OpenSessionResult.InvalidName(String reason) ->
+                    player.sendMessage(MSG.error(reason));
+            case ArenaResult.OpenSessionResult.SchematicMissing(String name) ->
+                    player.sendMessage(MSG.error("Schematic '" + name + "' was not found."));
+            case ArenaResult.OpenSessionResult.SchematicLoadFailed(String name, String message) ->
+                    player.sendMessage(MSG.error("Could not load schematic '" + name + "': " + message));
+            case ArenaResult.OpenSessionResult.AllocatorExhausted(int max) ->
+                    player.sendMessage(MSG.error("All " + max + " arena slots are in use; close a session and try again."));
+            case ArenaResult.OpenSessionResult.RegionFailed(String message) ->
+                    player.sendMessage(MSG.error("Could not register WorldGuard region: " + message));
+            case ArenaResult.OpenSessionResult.InvalidFlag(String flagName, String message) ->
+                    player.sendMessage(MSG.error("Could not apply flag '" + flagName + "': " + message));
+            case ArenaResult.OpenSessionResult.DependencyMissing(String message) ->
+                    player.sendMessage(MSG.error("Dependency missing: " + message));
+        }
     }
 
     private int handleJoin(CommandContext<CommandSourceStack> ctx) {

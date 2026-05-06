@@ -1,5 +1,6 @@
 package ax.xz.max.pvpgames.arena.internal.manager;
 
+import ax.xz.max.async.Promise;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
@@ -119,8 +120,8 @@ public final class UnavailableArenaManager implements ArenaManager {
     // ---- session lifecycle (every entry point fails cleanly) ----------
 
     @Override
-    public ArenaResult.OpenSessionResult openSession(String rawArenaName) {
-        return new ArenaResult.OpenSessionResult.DependencyMissing(message);
+    public Promise<ArenaResult.OpenSessionResult> openSession(String rawArenaName) {
+        return Promise.completedFuture(new ArenaResult.OpenSessionResult.DependencyMissing(message));
     }
 
     @Override

@@ -92,7 +92,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
         Path schematicsDir = getDataFolder().getParentFile().toPath()
                 .resolve("WorldEdit").resolve("schematics");
         this.schematicService = faweReady
-                ? new WorldEditSchematicService(schematicsDir, this, getSLF4JLogger())
+                ? new WorldEditSchematicService(schematicsDir, gameScheduler, getSLF4JLogger())
                 : new UnavailableSchematicService();
 
         this.worldGuardService = wgReady
@@ -146,7 +146,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
             this.arenaManager = new DefaultArenaManager(
                     arenaRepository, schematicService, worldGuardService,
                     allocator, stateCache, arenaWorld,
-                    server, Clock.systemUTC(), getSLF4JLogger());
+                    server, gameScheduler, Clock.systemUTC(), getSLF4JLogger());
         } else {
             this.arenaManager = new UnavailableArenaManager(arenaRepository, Clock.systemUTC(), missingDeps);
         }
@@ -156,7 +156,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
         // register commands
         new KitCommand(kitService, server).register(getLifecycleManager());
-        new ArenaCommand(arenaManager, server).register(getLifecycleManager());
+        new ArenaCommand(arenaManager, server, gameScheduler).register(getLifecycleManager());
         new TestAsyncCommand(gameScheduler).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");

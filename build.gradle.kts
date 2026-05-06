@@ -14,15 +14,13 @@ repositories {
 dependencies {
     compileOnly("net.luckperms:api:5.4")
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
-    compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.4.2")
-    compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.13") {
-        // These transitives clash with newer versions pulled by
-        // worldedit-bukkit:7.4.2; we get them from there at compile time
-        // and the runtime server provides them anyway.
-        exclude(group = "com.google.guava")
-        exclude(group = "com.google.code.gson")
-        exclude(group = "it.unimi.dsi")
-        exclude(group = "com.sk89q.worldedit")
+
+    compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Core:2.15.0")
+    compileOnly("com.fastasyncworldedit:FastAsyncWorldEdit-Bukkit:2.15.0") {
+        isTransitive = false
+    }
+    compileOnly("com.sk89q.worldguard:worldguard-core:7.0.13") {
+        isTransitive = false
     }
     compileOnly("org.mvplugins.multiverse.core:multiverse-core:5.6.1")
 }

@@ -1,32 +1,37 @@
 package ax.xz.max.pvpgames.schematic;
 
+import ax.xz.max.async.Promise;
+import ax.xz.max.async.Result;
 import org.bukkit.World;
 
 /**
- * Abstraction over a schematic-loading plugin (currently WorldEdit).
+ * Loads and pastes WorldEdit schematics. The actual paste runs on a
+ * background thread (FAWE makes the block-touching calls thread-safe), so
+ * {@link #pasteAtOrigin} returns a {@link Promise} the caller can chain
+ * follow-up work onto.
  *
- * <p>Lookup is by {@link SchematicName} (a validated short name like
- * {@code "myarena"}); the implementation resolves it to a file under
- * WorldEdit's schematics directory. When the underlying plugin is missing, a
- * fallback impl throws {@link SchematicException} from every method so the
- * rest of the plugin keeps working.
+ * <p>Errors are surfaced through the {@link Result} on the success side of
+ * the promise rather than through exceptions, so callers can pattern-match
+ * on {@link SchematicError} alongside other async results.
+ *
+ * <p>An {@code Unavailable} fallback is wired in when the underlying plugin
+ * is missing; it returns a completed {@code Err} promise from every call.
  */
 public interface SchematicService {
 
     /**
-     * Pastes the schematic at the given origin in the target world. Air blocks
-     * in the schematic do replace existing blocks (so an empty void world ends
-     * up with exactly the schematic's contents).
+     * Pastes the named schematic into {@code targetWorld} with its bottom
+     * northwest corner at {@code origin}. Air blocks in the schematic replace
+     * existing blocks, so a void world ends up with exactly the schematic's
+     * contents.
      *
-     * @throws SchematicException.NotFound    if no file matches the name
-     * @throws SchematicException.LoadFailed  if the file exists but cannot be parsed/pasted
-     * @throws SchematicException             if the schematic plugin is unavailable
+     * @return a promise that completes with {@link Result.Ok} when the paste
+     *         finishes, or {@link Result.Err} carrying a {@link SchematicError}
+     *         if the file is missing or fails to load
      */
-    void pasteAtOrigin(SchematicName schematicName, World targetWorld, BlockVec3 origin) throws SchematicException;
+    Promise<Result<Void, SchematicError>> pasteAtOrigin(
+            SchematicName schematicName, World targetWorld, BlockVec3 origin);
 
-    /**
-     * @return {@code true} if a schematic file with this name resolves to a
-     *         readable file on disk
-     */
+    /** Cheap synchronous existence check; safe to call from the main thread. */
     boolean schematicExists(SchematicName schematicName);
 }

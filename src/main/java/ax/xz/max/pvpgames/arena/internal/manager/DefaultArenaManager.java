@@ -1,5 +1,9 @@
 package ax.xz.max.pvpgames.arena.internal.manager;
 
+import ax.xz.max.async.GameExecutor;
+import ax.xz.max.async.GameScheduler;
+import ax.xz.max.async.Promise;
+import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
@@ -10,7 +14,7 @@ import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.internal.session.DefaultArenaSession;
 import ax.xz.max.pvpgames.command.NameParseResult;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
-import ax.xz.max.pvpgames.schematic.SchematicException;
+import ax.xz.max.pvpgames.schematic.SchematicError;
 import ax.xz.max.pvpgames.schematic.SchematicName;
 import ax.xz.max.pvpgames.schematic.SchematicService;
 import ax.xz.max.pvpgames.worldguard.ProtectedArenaRegion;
@@ -37,13 +41,23 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Default {@link ArenaManager} implementation.
  *
- * <p>Owns the shared arenas world, the {@link ArenaAllocator} that hands out
- * grid origins for it, the pool of {@link ArenaSession}s, and the
- * {@link PlayerStateCache} that the sessions share. Persistent CRUD is
- * delegated to the injected {@link ArenaRepository}.
+ * <p>Owns the shared arenas world, the {@link ArenaAllocator}, the
+ * {@link ArenaSession} pool, and the {@link PlayerStateCache} the sessions
+ * share. Persistent CRUD is delegated to the injected {@link ArenaRepository}.
  *
- * <p>All methods must run on the server main thread; concurrent use is not
- * supported.
+ * <p>{@link #openSession} is the only async entry point. It splits into
+ * three phases that each run on the appropriate executor:
+ * <ol>
+ *   <li><b>prelude</b> on main: parse the name, look up the arena, allocate
+ *       a grid slot.</li>
+ *   <li><b>paste</b> on async: paste the schematic via the
+ *       {@link SchematicService}'s own background promise.</li>
+ *   <li><b>finalize</b> on main: register the WorldGuard region, apply the
+ *       arena's flags, and add the session to the pool.</li>
+ * </ol>
+ * Failures at any phase short-circuit the chain with the matching
+ * {@link ArenaResult.OpenSessionResult} variant and release any resources
+ * that were already acquired.
  */
 public final class DefaultArenaManager implements ArenaManager {
 
@@ -56,6 +70,7 @@ public final class DefaultArenaManager implements ArenaManager {
     private final PlayerStateCache playerStateCache;
     private final World arenaWorld;
     private final Server server;
+    private final GameScheduler scheduler;
     private final Clock clock;
     private final Logger logger;
 
@@ -71,6 +86,7 @@ public final class DefaultArenaManager implements ArenaManager {
             PlayerStateCache playerStateCache,
             World arenaWorld,
             Server server,
+            GameScheduler scheduler,
             Clock clock,
             Logger logger) {
         this.repository = Objects.requireNonNull(repository, "repository");
@@ -80,6 +96,7 @@ public final class DefaultArenaManager implements ArenaManager {
         this.playerStateCache = Objects.requireNonNull(playerStateCache, "playerStateCache");
         this.arenaWorld = Objects.requireNonNull(arenaWorld, "arenaWorld");
         this.server = Objects.requireNonNull(server, "server");
+        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.logger = Objects.requireNonNull(logger, "logger");
     }
@@ -155,67 +172,99 @@ public final class DefaultArenaManager implements ArenaManager {
     // ---- session lifecycle --------------------------------------------
 
     @Override
-    public ArenaResult.OpenSessionResult openSession(String rawArenaName) {
+    public Promise<ArenaResult.OpenSessionResult> openSession(String rawArenaName) {
+        GameExecutor main = scheduler.mainExecutor();
+
+        // prelude (main) -> paste (async, run by SchematicService) -> finalize (main).
+        return Promise.supplyAsync(() -> prepareOpen(rawArenaName), main)
+                .thenComposeAsync(prelude -> switch (prelude) {
+                    case Result.Err<Prelude, ArenaResult.OpenSessionResult>(var err) ->
+                            Promise.completedFuture(err);
+                    case Result.Ok<Prelude, ArenaResult.OpenSessionResult>(Prelude p) ->
+                            schematicService.pasteAtOrigin(
+                                            p.arena().schematicName(), arenaWorld, p.allocation().origin())
+                                    .thenApplyAsync(paste -> finalizeOpen(p, paste), main);
+                }, main);
+    }
+
+    /**
+     * Phase 1, on the main thread. Validates the name, looks up the arena,
+     * and reserves a grid slot. Returns the bundled prelude data on success
+     * or a fully-formed {@link ArenaResult.OpenSessionResult} variant on
+     * failure.
+     */
+    private Result<Prelude, ArenaResult.OpenSessionResult> prepareOpen(String rawArenaName) {
         NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
         if (parsed instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
-            return new ArenaResult.OpenSessionResult.InvalidName(reason);
+            return new Result.Err<>(new ArenaResult.OpenSessionResult.InvalidName(reason));
         }
         ArenaName arenaName = ((NameParseResult.Valid<ArenaName>) parsed).name();
 
         Optional<Arena> maybeArena = repository.find(arenaName);
         if (maybeArena.isEmpty()) {
-            return new ArenaResult.OpenSessionResult.NotFound(rawArenaName);
+            return new Result.Err<>(new ArenaResult.OpenSessionResult.NotFound(rawArenaName));
         }
         Arena arena = maybeArena.get();
 
         Optional<ArenaAllocator.Allocation> maybeSlot = allocator.allocate();
         if (maybeSlot.isEmpty()) {
-            return new ArenaResult.OpenSessionResult.AllocatorExhausted(ArenaAllocator.MAX_SLOTS);
+            return new Result.Err<>(new ArenaResult.OpenSessionResult.AllocatorExhausted(ArenaAllocator.MAX_SLOTS));
         }
-        ArenaAllocator.Allocation allocation = maybeSlot.get();
+        return new Result.Ok<>(new Prelude(arena, maybeSlot.get()));
+    }
 
-        try {
-            schematicService.pasteAtOrigin(arena.schematicName(), arenaWorld, allocation.origin());
-        } catch (SchematicException.NotFound ex) {
-            allocator.release(allocation.slotIndex());
-            return new ArenaResult.OpenSessionResult.SchematicMissing(arena.schematicName().value());
-        } catch (SchematicException ex) {
-            allocator.release(allocation.slotIndex());
-            return new ArenaResult.OpenSessionResult.SchematicLoadFailed(arena.schematicName().value(), ex.getMessage());
+    /**
+     * After schematic paste finishes, registers the WorldGuard region, applies the arena's flags,
+     * and adds the session to the pool. Should be run on main thread.
+     */
+    private ArenaResult.OpenSessionResult finalizeOpen(
+            Prelude p, Result<Void, SchematicError> pasteResult) {
+        if (pasteResult instanceof Result.Err<Void, SchematicError>(SchematicError err)) {
+            allocator.release(p.allocation().slotIndex());
+            String name = p.arena().schematicName().value();
+            return switch (err) {
+                case SchematicError.NotFound ignored ->
+                        new ArenaResult.OpenSessionResult.SchematicMissing(name);
+                case SchematicError.LoadFailed lf ->
+                        new ArenaResult.OpenSessionResult.SchematicLoadFailed(name, lf.message());
+            };
         }
 
         long sessionId = nextSessionId.getAndIncrement();
         String regionId = REGION_ID_PREFIX + sessionId;
-        BlockVec3 min = allocator.minOf(allocation.slotIndex());
-        BlockVec3 max = allocator.maxOf(allocation.slotIndex());
+        BlockVec3 min = allocator.minOf(p.allocation().slotIndex());
+        BlockVec3 max = allocator.maxOf(p.allocation().slotIndex());
 
         ProtectedArenaRegion region;
         try {
             region = worldGuardService.createRegion(arenaWorld, regionId, min, max);
         } catch (WorldGuardException ex) {
-            allocator.release(allocation.slotIndex());
+            allocator.release(p.allocation().slotIndex());
             return new ArenaResult.OpenSessionResult.RegionFailed(ex.getMessage());
         }
 
         try {
-            worldGuardService.applyFlags(region, arena.flags());
+            worldGuardService.applyFlags(region, p.arena().flags());
         } catch (WorldGuardException ex) {
             worldGuardService.removeRegion(arenaWorld, regionId);
-            allocator.release(allocation.slotIndex());
+            allocator.release(p.allocation().slotIndex());
             return new ArenaResult.OpenSessionResult.InvalidFlag(
-                    extractFlagName(ex.getMessage(), arena.flags()), ex.getMessage());
+                    extractFlagName(ex.getMessage(), p.arena().flags()), ex.getMessage());
         }
 
         DefaultArenaSession session = new DefaultArenaSession(
-                sessionId, arena, arenaWorld, allocation.origin(), allocation.slotIndex(),
+                sessionId, p.arena(), arenaWorld, p.allocation().origin(), p.allocation().slotIndex(),
                 region, repository, playerStateCache);
         sessionPool.put(sessionId, session);
 
         logger.info("Opened arena session {} ('{}') at slot {} origin ({}, {}, {}).",
-                sessionId, arena.name().value(), allocation.slotIndex(),
-                allocation.origin().x(), allocation.origin().y(), allocation.origin().z());
-        return new ArenaResult.OpenSessionResult.Opened(session, arena.spawns().isEmpty());
+                sessionId, p.arena().name().value(), p.allocation().slotIndex(),
+                p.allocation().origin().x(), p.allocation().origin().y(), p.allocation().origin().z());
+        return new ArenaResult.OpenSessionResult.Opened(session, p.arena().spawns().isEmpty());
     }
+
+    /** Bundle of values that flow from the prelude phase into finalize. */
+    private record Prelude(Arena arena, ArenaAllocator.Allocation allocation) {}
 
     @Override
     public ArenaResult.CloseSessionResult closeSession(long sessionId) {
