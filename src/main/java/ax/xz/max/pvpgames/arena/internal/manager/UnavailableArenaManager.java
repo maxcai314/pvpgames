@@ -3,11 +3,11 @@ package ax.xz.max.pvpgames.arena.internal.manager;
 import ax.xz.max.async.Promise;
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
+import ax.xz.max.pvpgames.arena.ArenaCreation;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
-import ax.xz.max.pvpgames.arena.ArenaResult;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.schematic.SchematicName;
 import org.bukkit.command.CommandSender;
@@ -23,19 +23,16 @@ import java.util.Optional;
 
 /**
  * {@link ArenaManager} used when one or more of the world / schematic /
- * region dependencies (Multiverse-Core, WorldEdit, WorldGuard) is missing.
+ * region dependencies is missing.
  *
- * <p>Persistent CRUD (create / delete / list / find) still works because it
- * only touches the {@link ArenaRepository} on disk. Anything that would
- * require pasting a schematic or registering a region returns
- * {@code DependencyMissing}; the player gets a clear message instead of a
- * confusing internal failure.
+ * <p>Persistent CRUD still works because it only touches the
+ * {@link ArenaRepository} on disk. Anything that needs a schematic or region
+ * returns the dependency-missing message; the player gets a clear hint
+ * instead of a confusing internal failure.
  *
  * <p>Wiring this implementation in place of {@link DefaultArenaManager} is
  * the mechanism that lets {@code DefaultArenaManager} stay free of
- * {@code instanceof Unavailable*Service} branches: by the time
- * {@code DefaultArenaManager} is constructed, all dependencies are known to
- * be present.
+ * {@code instanceof Unavailable*Service} branches.
  */
 public final class UnavailableArenaManager implements ArenaManager {
 
@@ -52,18 +49,18 @@ public final class UnavailableArenaManager implements ArenaManager {
     // ---- persistent CRUD ----------------------------------------------
 
     @Override
-    public ArenaResult.CreateResult create(CommandSender creator, String rawArenaName, String rawSchematicName) {
+    public Result<ArenaCreation, String> create(CommandSender creator, String rawArenaName, String rawSchematicName) {
         Objects.requireNonNull(creator, "creator");
 
         Result<ArenaName, String> parsedName = ArenaName.tryParse(rawArenaName);
         if (parsedName instanceof Result.Err<ArenaName, String>(String reason)) {
-            return new ArenaResult.CreateResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         ArenaName name = ((Result.Ok<ArenaName, String>) parsedName).val();
 
         Result<SchematicName, String> parsedSchematic = SchematicName.tryParse(rawSchematicName);
         if (parsedSchematic instanceof Result.Err<SchematicName, String>(String reason)) {
-            return new ArenaResult.CreateResult.InvalidSchematic(reason);
+            return new Result.Err<>(reason);
         }
         SchematicName schematic = ((Result.Ok<SchematicName, String>) parsedSchematic).val();
 
@@ -76,27 +73,24 @@ public final class UnavailableArenaManager implements ArenaManager {
                 creator instanceof Player p ? p.getUniqueId() : null);
         try {
             boolean replaced = repository.save(arena);
-            return new ArenaResult.CreateResult.Created(arena, replaced);
+            return new Result.Ok<>(new ArenaCreation(arena, replaced));
         } catch (ArenaPersistenceException ex) {
-            return new ArenaResult.CreateResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not save arena: " + ex.getMessage());
         }
     }
 
     @Override
-    public ArenaResult.DeleteResult delete(String rawArenaName) {
+    public Result<Boolean, String> delete(String rawArenaName) {
         Result<ArenaName, String> parsed = ArenaName.tryParse(rawArenaName);
         if (parsed instanceof Result.Err<ArenaName, String>(String reason)) {
-            return new ArenaResult.DeleteResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         ArenaName name = ((Result.Ok<ArenaName, String>) parsed).val();
 
         try {
-            boolean existed = repository.delete(name);
-            return existed
-                    ? new ArenaResult.DeleteResult.Deleted(name)
-                    : new ArenaResult.DeleteResult.NotFound(rawArenaName);
+            return new Result.Ok<>(repository.delete(name));
         } catch (ArenaPersistenceException ex) {
-            return new ArenaResult.DeleteResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not delete arena: " + ex.getMessage());
         }
     }
 
@@ -120,13 +114,13 @@ public final class UnavailableArenaManager implements ArenaManager {
     // ---- session lifecycle (every entry point fails cleanly) ----------
 
     @Override
-    public Promise<ArenaResult.OpenSessionResult> openSession(String rawArenaName) {
-        return Promise.completedFuture(new ArenaResult.OpenSessionResult.DependencyMissing(message));
+    public Promise<Result<ArenaSession, String>> openSession(String rawArenaName) {
+        return Promise.completedFuture(new Result.Err<>(message));
     }
 
     @Override
-    public ArenaResult.CloseSessionResult closeSession(long sessionId) {
-        return new ArenaResult.CloseSessionResult.NotFound(sessionId);
+    public boolean closeSession(long sessionId) {
+        return false;
     }
 
     @Override

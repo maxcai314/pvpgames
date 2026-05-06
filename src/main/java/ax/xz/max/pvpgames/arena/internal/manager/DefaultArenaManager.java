@@ -5,11 +5,11 @@ import ax.xz.max.async.GameScheduler;
 import ax.xz.max.async.Promise;
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
+import ax.xz.max.pvpgames.arena.ArenaCreation;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
-import ax.xz.max.pvpgames.arena.ArenaResult;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.internal.session.DefaultArenaSession;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
@@ -45,18 +45,17 @@ import java.util.concurrent.atomic.AtomicLong;
  * share. Persistent CRUD is delegated to the injected {@link ArenaRepository}.
  *
  * <p>{@link #openSession} is the only async entry point. It splits into
- * three phases that each run on the appropriate executor:
+ * three phases:
  * <ol>
  *   <li><b>prelude</b> on main: parse the name, look up the arena, allocate
  *       a grid slot.</li>
  *   <li><b>paste</b> on async: paste the schematic via the
- *       {@link SchematicService}'s own background promise.</li>
+ *       {@link SchematicService}'s background promise.</li>
  *   <li><b>finalize</b> on main: register the WorldGuard region, apply the
  *       arena's flags, and add the session to the pool.</li>
  * </ol>
- * Failures at any phase short-circuit the chain with the matching
- * {@link ArenaResult.OpenSessionResult} variant and release any resources
- * that were already acquired.
+ * Failures at any phase short-circuit the chain with an error message and
+ * release any resources that were already acquired.
  */
 public final class DefaultArenaManager implements ArenaManager {
 
@@ -103,18 +102,18 @@ public final class DefaultArenaManager implements ArenaManager {
     // ---- persistent CRUD ----------------------------------------------
 
     @Override
-    public ArenaResult.CreateResult create(CommandSender creator, String rawArenaName, String rawSchematicName) {
+    public Result<ArenaCreation, String> create(CommandSender creator, String rawArenaName, String rawSchematicName) {
         Objects.requireNonNull(creator, "creator");
 
         Result<ArenaName, String> parsedName = ArenaName.tryParse(rawArenaName);
         if (parsedName instanceof Result.Err<ArenaName, String>(String reason)) {
-            return new ArenaResult.CreateResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         ArenaName name = ((Result.Ok<ArenaName, String>) parsedName).val();
 
         Result<SchematicName, String> parsedSchematic = SchematicName.tryParse(rawSchematicName);
         if (parsedSchematic instanceof Result.Err<SchematicName, String>(String reason)) {
-            return new ArenaResult.CreateResult.InvalidSchematic(reason);
+            return new Result.Err<>(reason);
         }
         SchematicName schematic = ((Result.Ok<SchematicName, String>) parsedSchematic).val();
 
@@ -127,27 +126,24 @@ public final class DefaultArenaManager implements ArenaManager {
                 creator instanceof Player p ? p.getUniqueId() : null);
         try {
             boolean replaced = repository.save(arena);
-            return new ArenaResult.CreateResult.Created(arena, replaced);
+            return new Result.Ok<>(new ArenaCreation(arena, replaced));
         } catch (ArenaPersistenceException ex) {
-            return new ArenaResult.CreateResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not save arena: " + ex.getMessage());
         }
     }
 
     @Override
-    public ArenaResult.DeleteResult delete(String rawArenaName) {
+    public Result<Boolean, String> delete(String rawArenaName) {
         Result<ArenaName, String> parsed = ArenaName.tryParse(rawArenaName);
         if (parsed instanceof Result.Err<ArenaName, String>(String reason)) {
-            return new ArenaResult.DeleteResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         ArenaName name = ((Result.Ok<ArenaName, String>) parsed).val();
 
         try {
-            boolean existed = repository.delete(name);
-            return existed
-                    ? new ArenaResult.DeleteResult.Deleted(name)
-                    : new ArenaResult.DeleteResult.NotFound(rawArenaName);
+            return new Result.Ok<>(repository.delete(name));
         } catch (ArenaPersistenceException ex) {
-            return new ArenaResult.DeleteResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not delete arena: " + ex.getMessage());
         }
     }
 
@@ -171,15 +167,15 @@ public final class DefaultArenaManager implements ArenaManager {
     // ---- session lifecycle --------------------------------------------
 
     @Override
-    public Promise<ArenaResult.OpenSessionResult> openSession(String rawArenaName) {
+    public Promise<Result<ArenaSession, String>> openSession(String rawArenaName) {
         GameExecutor main = scheduler.mainExecutor();
 
         // prelude (main) -> paste (async, run by SchematicService) -> finalize (main).
         return Promise.supplyAsync(() -> prepareOpen(rawArenaName), main)
                 .thenComposeAsync(prelude -> switch (prelude) {
-                    case Result.Err<Prelude, ArenaResult.OpenSessionResult>(var err) ->
-                            Promise.completedFuture(err);
-                    case Result.Ok<Prelude, ArenaResult.OpenSessionResult>(Prelude p) ->
+                    case Result.Err<Prelude, String>(String err) ->
+                            Promise.<Result<ArenaSession, String>>completedFuture(new Result.Err<>(err));
+                    case Result.Ok<Prelude, String>(Prelude p) ->
                             schematicService.pasteAtOrigin(
                                             p.arena().schematicName(), arenaWorld, p.allocation().origin())
                                     .thenApplyAsync(paste -> finalizeOpen(p, paste), main);
@@ -189,44 +185,45 @@ public final class DefaultArenaManager implements ArenaManager {
     /**
      * Phase 1, on the main thread. Validates the name, looks up the arena,
      * and reserves a grid slot. Returns the bundled prelude data on success
-     * or a fully-formed {@link ArenaResult.OpenSessionResult} variant on
-     * failure.
+     * or a player-facing error message on failure.
      */
-    private Result<Prelude, ArenaResult.OpenSessionResult> prepareOpen(String rawArenaName) {
+    private Result<Prelude, String> prepareOpen(String rawArenaName) {
         Result<ArenaName, String> parsed = ArenaName.tryParse(rawArenaName);
         if (parsed instanceof Result.Err<ArenaName, String>(String reason)) {
-            return new Result.Err<>(new ArenaResult.OpenSessionResult.InvalidName(reason));
+            return new Result.Err<>(reason);
         }
         ArenaName arenaName = ((Result.Ok<ArenaName, String>) parsed).val();
 
         Optional<Arena> maybeArena = repository.find(arenaName);
         if (maybeArena.isEmpty()) {
-            return new Result.Err<>(new ArenaResult.OpenSessionResult.NotFound(rawArenaName));
+            return new Result.Err<>("No arena named '" + rawArenaName + "' exists.");
         }
         Arena arena = maybeArena.get();
 
         Optional<ArenaAllocator.Allocation> maybeSlot = allocator.allocate();
         if (maybeSlot.isEmpty()) {
-            return new Result.Err<>(new ArenaResult.OpenSessionResult.AllocatorExhausted(ArenaAllocator.MAX_SLOTS));
+            return new Result.Err<>("All " + ArenaAllocator.MAX_SLOTS
+                    + " arena slots are in use; close a session and try again.");
         }
         return new Result.Ok<>(new Prelude(arena, maybeSlot.get()));
     }
 
     /**
-     * After schematic paste finishes, registers the WorldGuard region, applies the arena's flags,
-     * and adds the session to the pool. Should be run on main thread.
+     * Phase 3, on the main thread. Runs after the schematic paste finishes.
+     * Translates a paste failure into a player-facing message, otherwise
+     * registers the WorldGuard region, applies the arena's flags, and adds
+     * the session to the pool.
      */
-    private ArenaResult.OpenSessionResult finalizeOpen(
+    private Result<ArenaSession, String> finalizeOpen(
             Prelude p, Result<Void, SchematicError> pasteResult) {
         if (pasteResult instanceof Result.Err<Void, SchematicError>(SchematicError err)) {
             allocator.release(p.allocation().slotIndex());
             String name = p.arena().schematicName().value();
-            return switch (err) {
-                case SchematicError.NotFound ignored ->
-                        new ArenaResult.OpenSessionResult.SchematicMissing(name);
+            return new Result.Err<>(switch (err) {
+                case SchematicError.NotFound ignored -> "Schematic '" + name + "' was not found.";
                 case SchematicError.LoadFailed lf ->
-                        new ArenaResult.OpenSessionResult.SchematicLoadFailed(name, lf.message());
-            };
+                        "Could not load schematic '" + name + "': " + lf.message();
+            });
         }
 
         long sessionId = nextSessionId.getAndIncrement();
@@ -239,7 +236,7 @@ public final class DefaultArenaManager implements ArenaManager {
             region = worldGuardService.createRegion(arenaWorld, regionId, min, max);
         } catch (WorldGuardException ex) {
             allocator.release(p.allocation().slotIndex());
-            return new ArenaResult.OpenSessionResult.RegionFailed(ex.getMessage());
+            return new Result.Err<>("Could not register WorldGuard region: " + ex.getMessage());
         }
 
         try {
@@ -247,8 +244,8 @@ public final class DefaultArenaManager implements ArenaManager {
         } catch (WorldGuardException ex) {
             worldGuardService.removeRegion(arenaWorld, regionId);
             allocator.release(p.allocation().slotIndex());
-            return new ArenaResult.OpenSessionResult.InvalidFlag(
-                    extractFlagName(ex.getMessage(), p.arena().flags()), ex.getMessage());
+            String flagName = extractFlagName(ex.getMessage(), p.arena().flags());
+            return new Result.Err<>("Could not apply flag '" + flagName + "': " + ex.getMessage());
         }
 
         DefaultArenaSession session = new DefaultArenaSession(
@@ -259,22 +256,22 @@ public final class DefaultArenaManager implements ArenaManager {
         logger.info("Opened arena session {} ('{}') at slot {} origin ({}, {}, {}).",
                 sessionId, p.arena().name().value(), p.allocation().slotIndex(),
                 p.allocation().origin().x(), p.allocation().origin().y(), p.allocation().origin().z());
-        return new ArenaResult.OpenSessionResult.Opened(session, p.arena().spawns().isEmpty());
+        return new Result.Ok<>(session);
     }
 
     /** Bundle of values that flow from the prelude phase into finalize. */
     private record Prelude(Arena arena, ArenaAllocator.Allocation allocation) {}
 
     @Override
-    public ArenaResult.CloseSessionResult closeSession(long sessionId) {
+    public boolean closeSession(long sessionId) {
         DefaultArenaSession session = sessionPool.remove(sessionId);
         if (session == null) {
-            return new ArenaResult.CloseSessionResult.NotFound(sessionId);
+            return false;
         }
         worldGuardService.removeRegion(arenaWorld, session.region().regionId());
         allocator.release(session.slotIndex());
         logger.info("Closed arena session {} ('{}').", sessionId, session.arenaName().value());
-        return new ArenaResult.CloseSessionResult.Closed(sessionId);
+        return true;
     }
 
     @Override
@@ -335,11 +332,9 @@ public final class DefaultArenaManager implements ArenaManager {
     }
 
     /**
-     * Best-effort recovery of which flag name caused the
-     * {@link WorldGuardException}. Used purely for the player-facing
-     * {@link ArenaResult.OpenSessionResult.InvalidFlag} message; if no name
-     * can be guessed, returns an empty string and the full reason still
-     * carries the detail.
+     * Best-effort recovery of which flag name caused a
+     * {@link WorldGuardException}. Used purely for the player-facing error
+     * message; if no name can be guessed, returns an empty string.
      */
     private static String extractFlagName(String message, Map<String, String> flags) {
         if (message == null) return "";

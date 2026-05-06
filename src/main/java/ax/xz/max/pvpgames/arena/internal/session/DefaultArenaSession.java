@@ -1,10 +1,10 @@
 package ax.xz.max.pvpgames.arena.internal.session;
 
+import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
-import ax.xz.max.pvpgames.arena.ArenaResult;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.SpawnPoint;
 import ax.xz.max.pvpgames.arena.internal.manager.PlayerStateCache;
@@ -101,7 +101,7 @@ public final class DefaultArenaSession implements ArenaSession {
     }
 
     @Override
-    public ArenaResult.JoinResult joinPlayer(Player player) {
+    public void joinPlayer(Player player) {
         Objects.requireNonNull(player, "player");
         playerStateCache.captureIfAbsent(player);
         PlayerStateSnapshot.DEFAULT.applyTo(player);
@@ -110,80 +110,69 @@ public final class DefaultArenaSession implements ArenaSession {
                 ? new Location(world, origin.x() + 0.5, origin.y(), origin.z() + 0.5)
                 : toWorldLocation(arena.spawns().getFirst());
         player.teleport(target);
-        return new ArenaResult.JoinResult.Joined(this, arena.spawns().isEmpty());
     }
 
     @Override
-    public ArenaResult.LeaveResult leavePlayer(Player player) {
+    public boolean leavePlayer(Player player) {
         Objects.requireNonNull(player, "player");
-        return playerStateCache.restore(player)
-                ? new ArenaResult.LeaveResult.Returned()
-                : new ArenaResult.LeaveResult.NoActiveSession();
+        return playerStateCache.restore(player);
     }
 
     @Override
-    public ArenaResult.AddSpawnResult addSpawnAtPlayer(Player player) {
+    public Result<Void, String> addSpawnAtPlayer(Player player) {
         Objects.requireNonNull(player, "player");
-        SpawnPoint spawn = SpawnPoint.relativeTo(player.getLocation(), origin);
-        return saveWithSpawn(spawn);
+        return saveWithSpawn(SpawnPoint.relativeTo(player.getLocation(), origin));
     }
 
     @Override
-    public ArenaResult.AddSpawnResult addSpawnExplicit(
+    public Result<Void, String> addSpawnExplicit(
             Player player, double x, double y, double z, Float yaw, Float pitch) {
         Objects.requireNonNull(player, "player");
         Location playerLoc = player.getLocation();
         float effectiveYaw = yaw != null ? yaw : playerLoc.getYaw();
         float effectivePitch = pitch != null ? pitch : playerLoc.getPitch();
-        SpawnPoint spawn = SpawnPoint.relativeTo(
-                new Location(world, x, y, z, effectiveYaw, effectivePitch),
-                origin);
-        return saveWithSpawn(spawn);
+        return saveWithSpawn(SpawnPoint.relativeTo(
+                new Location(world, x, y, z, effectiveYaw, effectivePitch), origin));
     }
 
-    private ArenaResult.AddSpawnResult saveWithSpawn(SpawnPoint spawn) {
+    private Result<Void, String> saveWithSpawn(SpawnPoint spawn) {
         Arena updated = arena.addSpawn(spawn);
         try {
             repository.save(updated);
         } catch (ArenaPersistenceException ex) {
-            return new ArenaResult.AddSpawnResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not save spawn: " + ex.getMessage());
         }
         this.arena = updated;
-        return new ArenaResult.AddSpawnResult.Added(updated, updated.spawns().size());
+        return new Result.Ok<>(null);
     }
 
     @Override
-    public ArenaResult.ListSpawnResult listSpawns() {
-        return new ArenaResult.ListSpawnResult.Listed(arena, arena.spawns());
-    }
-
-    @Override
-    public ArenaResult.VisitSpawnResult visitSpawn(Player player, int oneBasedIndex) {
+    public Result<SpawnPoint, String> visitSpawn(Player player, int oneBasedIndex) {
         Objects.requireNonNull(player, "player");
         List<SpawnPoint> spawns = arena.spawns();
         if (oneBasedIndex < 1 || oneBasedIndex > spawns.size()) {
-            return new ArenaResult.VisitSpawnResult.IndexOutOfRange(oneBasedIndex, spawns.size());
+            return new Result.Err<>(noSuchSpawnMessage(oneBasedIndex, spawns.size()));
         }
         SpawnPoint spawn = spawns.get(oneBasedIndex - 1);
         player.teleport(toWorldLocation(spawn));
-        return new ArenaResult.VisitSpawnResult.Visited(arena, oneBasedIndex, spawn);
+        return new Result.Ok<>(spawn);
     }
 
     @Override
-    public ArenaResult.RemoveSpawnResult removeSpawn(int oneBasedIndex) {
+    public Result<SpawnPoint, String> removeSpawn(int oneBasedIndex) {
         List<SpawnPoint> spawns = arena.spawns();
         if (oneBasedIndex < 1 || oneBasedIndex > spawns.size()) {
-            return new ArenaResult.RemoveSpawnResult.IndexOutOfRange(oneBasedIndex, spawns.size());
+            return new Result.Err<>(noSuchSpawnMessage(oneBasedIndex, spawns.size()));
         }
         SpawnPoint removed = spawns.get(oneBasedIndex - 1);
         Arena updated = arena.removeSpawnAt(oneBasedIndex - 1);
         try {
             repository.save(updated);
         } catch (ArenaPersistenceException ex) {
-            return new ArenaResult.RemoveSpawnResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not remove spawn: " + ex.getMessage());
         }
         this.arena = updated;
-        return new ArenaResult.RemoveSpawnResult.Removed(updated, oneBasedIndex, removed);
+        return new Result.Ok<>(removed);
     }
 
     @Override
@@ -194,5 +183,10 @@ public final class DefaultArenaSession implements ArenaSession {
         }
         Location loc = player.getLocation();
         return region.contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+    }
+
+    private static String noSuchSpawnMessage(int requested, int size) {
+        return "No spawn at index " + requested + " (arena has " + size
+                + " spawn point" + (size == 1 ? "" : "s") + ").";
     }
 }

@@ -1,5 +1,6 @@
 package ax.xz.max.pvpgames.arena;
 
+import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -11,12 +12,10 @@ import org.bukkit.entity.Player;
  * inside. Created by {@link ArenaManager#openSession} and destroyed by
  * {@link ArenaManager#closeSession}.
  *
- * <p>Editing operations (add / list / visit / remove spawn) and player
- * movement (join / leave) live HERE rather than on the manager because they
- * belong to a specific session: the session knows the arena name, the world,
- * the origin, and the WorldGuard region. The manager's responsibility is
- * limited to the pool itself: creating sessions, looking them up, and
- * destroying them.
+ * <p>Editing operations (add / visit / remove spawn) and player movement
+ * (join / leave) live HERE rather than on the manager because they belong to
+ * a specific session. The manager's responsibility is limited to the pool
+ * itself: creating sessions, looking them up, and destroying them.
  *
  * <p>All methods must run on the server main thread.
  */
@@ -39,9 +38,9 @@ public interface ArenaSession {
     BlockVec3 origin();
 
     /**
-     * The arena snapshot used to build this session. Edits made through this
-     * session update both the repository and the cached snapshot, so this
-     * always reflects the latest state.
+     * The latest arena snapshot. Edits made through this session update both
+     * the repository and the cached snapshot, so this always reflects the
+     * current state. Use {@code arena().spawns()} to read the spawn list.
      */
     Arena arena();
 
@@ -51,55 +50,63 @@ public interface ArenaSession {
      */
     Location toWorldLocation(SpawnPoint spawn);
 
+    // ---- player movement ----------------------------------------------
+
     /**
      * Adds {@code player} to the session: snapshots their pre-session state
-     * if not already cached, applies the join baseline (empty inventory, full
-     * health, etc.), and teleports them to the first spawn point (or the
-     * session origin if the spawn list is empty).
+     * if not already cached, applies the join baseline (empty inventory,
+     * full health, etc.), and teleports them to the first spawn point (or
+     * the session origin if the spawn list is empty). Always succeeds.
      */
-    ArenaResult.JoinResult joinPlayer(Player player);
+    void joinPlayer(Player player);
 
     /**
      * Removes {@code player} from the session and restores their cached
-     * pre-session state. Idempotent; returns {@code NoActiveSession} when
-     * the player has no cached state.
+     * pre-session state. Idempotent.
+     *
+     * @return {@code true} if a snapshot was restored, {@code false} if the
+     *         player had no cached state
      */
-    ArenaResult.LeaveResult leavePlayer(Player player);
+    boolean leavePlayer(Player player);
+
+    // ---- spawn-list editing -------------------------------------------
 
     /**
      * Appends {@code player}'s current location as a new spawn point
      * (translated to arena-relative coordinates) and persists the change.
+     *
+     * @return {@code Ok} on success, or {@code Err} carrying an I/O failure
+     *         message
      */
-    ArenaResult.AddSpawnResult addSpawnAtPlayer(Player player);
+    Result<Void, String> addSpawnAtPlayer(Player player);
 
     /**
      * Appends a new spawn point at the given world-absolute coordinates,
-     * with rotation taken from {@code player} if {@code yaw} or
-     * {@code pitch} is {@code null}.
+     * with rotation taken from {@code player} if {@code yaw} or {@code pitch}
+     * is {@code null}.
      */
-    ArenaResult.AddSpawnResult addSpawnExplicit(Player player, double x, double y, double z, Float yaw, Float pitch);
-
-    /** Returns the current spawn list. */
-    ArenaResult.ListSpawnResult listSpawns();
+    Result<Void, String> addSpawnExplicit(Player player, double x, double y, double z, Float yaw, Float pitch);
 
     /**
      * Teleports {@code player} to the spawn at {@code oneBasedIndex}.
-     * Returns {@code IndexOutOfRange} when the index is outside
-     * {@code [1, spawns.size()]}.
+     *
+     * @return on success the spawn that was visited; on failure an error
+     *         message that can be shown to players (out-of-range index)
      */
-    ArenaResult.VisitSpawnResult visitSpawn(Player player, int oneBasedIndex);
+    Result<SpawnPoint, String> visitSpawn(Player player, int oneBasedIndex);
 
     /**
      * Removes the spawn at {@code oneBasedIndex} and persists the change.
-     * Returns {@code IndexOutOfRange} when the index is outside
-     * {@code [1, spawns.size()]}.
+     *
+     * @return on success the spawn that was removed; on failure an error
+     *         message that can be shown to players (out-of-range index or
+     *         I/O failure)
      */
-    ArenaResult.RemoveSpawnResult removeSpawn(int oneBasedIndex);
+    Result<SpawnPoint, String> removeSpawn(int oneBasedIndex);
 
     /**
      * Returns {@code true} when {@code player}'s current location is inside
-     * the session's region. Used by the manager to derive a player's session
-     * from their location.
+     * the session's region.
      */
     boolean contains(Player player);
 }

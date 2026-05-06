@@ -1,10 +1,11 @@
 package ax.xz.max.pvpgames.arena.command;
 
 import ax.xz.max.async.GameScheduler;
+import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
+import ax.xz.max.pvpgames.arena.ArenaCreation;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
-import ax.xz.max.pvpgames.arena.ArenaResult;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.SpawnPoint;
 import ax.xz.max.pvpgames.command.CommandSenders;
@@ -47,9 +48,10 @@ import java.util.Optional;
  * {@code .requires(...)}. Brigadier hides nodes the source cannot use, so
  * unauthorized players see "Unknown command" rather than a permission error.
  *
- * <p>Handlers translate {@link ArenaResult} variants into Adventure
- * {@link Component} messages via the shared {@link MessageStyle}. Spawn-edit
- * and per-session operations look up the current session via
+ * <p>Handlers consume {@link Result} values from the manager / session
+ * interfaces. The service layer pre-formats every error message, so the
+ * common error path is a one-liner: send {@code MSG.error(msg)} and return.
+ * Spawn-edit and per-session operations look up the current session via
  * {@link ArenaManager#findSessionFor(Player)}; the "you must be inside an
  * arena session" branch lives at the command layer rather than on the
  * session interface.
@@ -167,24 +169,16 @@ public final class ArenaCommand {
         String rawName = StringArgumentType.getString(ctx, "name");
         String schematic = StringArgumentType.getString(ctx, "schematic");
         return switch (manager.create(sender, rawName, schematic)) {
-            case ArenaResult.CreateResult.Created(Arena arena, boolean overwrote) -> {
-                String verb = overwrote ? "Replaced" : "Created";
+            case Result.Ok<ArenaCreation, String>(ArenaCreation creation) -> {
+                String verb = creation.replaced() ? "Replaced" : "Created";
                 sender.sendMessage(MSG.success(verb + " arena ")
-                        .append(MSG.highlight(arena.name().value()))
+                        .append(MSG.highlight(creation.arena().name().value()))
                         .append(Component.text(" using schematic ", NamedTextColor.GRAY))
-                        .append(MSG.highlight(arena.schematicName().value())));
+                        .append(MSG.highlight(creation.arena().schematicName().value())));
                 yield Command.SINGLE_SUCCESS;
             }
-            case ArenaResult.CreateResult.InvalidName(String reason) -> {
-                sender.sendMessage(MSG.error(reason));
-                yield 0;
-            }
-            case ArenaResult.CreateResult.InvalidSchematic(String reason) -> {
-                sender.sendMessage(MSG.error(reason));
-                yield 0;
-            }
-            case ArenaResult.CreateResult.IoError(String message) -> {
-                sender.sendMessage(MSG.error("Could not save arena: " + message));
+            case Result.Err<ArenaCreation, String>(String message) -> {
+                sender.sendMessage(MSG.error(message));
                 yield 0;
             }
         };
@@ -194,20 +188,16 @@ public final class ArenaCommand {
         CommandSender sender = ctx.getSource().getSender();
         String rawName = StringArgumentType.getString(ctx, "name");
         return switch (manager.delete(rawName)) {
-            case ArenaResult.DeleteResult.Deleted(ArenaName name) -> {
-                sender.sendMessage(MSG.success("Deleted arena ").append(MSG.highlight(name.value())));
-                yield Command.SINGLE_SUCCESS;
-            }
-            case ArenaResult.DeleteResult.NotFound(String requested) -> {
-                sender.sendMessage(MSG.error("No arena named '" + requested + "' exists."));
+            case Result.Ok<Boolean, String>(Boolean deleted) -> {
+                if (deleted) {
+                    sender.sendMessage(MSG.success("Deleted arena ").append(MSG.highlight(rawName)));
+                    yield Command.SINGLE_SUCCESS;
+                }
+                sender.sendMessage(MSG.error("No arena named '" + rawName + "' exists."));
                 yield 0;
             }
-            case ArenaResult.DeleteResult.InvalidName(String reason) -> {
-                sender.sendMessage(MSG.error(reason));
-                yield 0;
-            }
-            case ArenaResult.DeleteResult.IoError(String message) -> {
-                sender.sendMessage(MSG.error("Could not delete arena: " + message));
+            case Result.Err<Boolean, String>(String message) -> {
+                sender.sendMessage(MSG.error(message));
                 yield 0;
             }
         };
@@ -243,7 +233,8 @@ public final class ArenaCommand {
 
         String creator = arena.createdBy() == null
                 ? "<unknown>"
-                : Optional.ofNullable(server.getOfflinePlayer(arena.createdBy()).getName()).orElse(arena.createdBy().toString());
+                : Optional.ofNullable(server.getOfflinePlayer(arena.createdBy()).getName())
+                        .orElse(arena.createdBy().toString());
         String created = DATE_FORMAT.format(arena.createdAt());
 
         sender.sendMessage(MSG.info("Arena ").append(MSG.highlight(arena.name().value())));
@@ -266,48 +257,34 @@ public final class ArenaCommand {
         if (maybe.isEmpty()) return 0;
         Player player = maybe.get();
         String rawName = StringArgumentType.getString(ctx, "name");
-        // Send message before starting async task
+        // Heads-up while the async paste runs; the success/error reply
+        // arrives once the session is fully open.
         player.sendMessage(MSG.info("Opening new session for arena ")
                 .append(MSG.highlight(rawName))
                 .append(Component.text("...", NamedTextColor.GRAY)));
 
-        // async creation of ArenaSession and then reply to player
         manager.openSession(rawName)
-                .thenAcceptAsync(result -> reportOpenSession(player, result), scheduler.mainExecutor());
+                .thenAcceptAsync(result -> reportOpenedSession(player, result), scheduler.mainExecutor());
         return Command.SINGLE_SUCCESS;
     }
 
-    private void reportOpenSession(Player player, ArenaResult.OpenSessionResult result) {
+    private void reportOpenedSession(Player player, Result<ArenaSession, String> result) {
         switch (result) {
-            case ArenaResult.OpenSessionResult.Opened(ArenaSession session, boolean noSpawnsYet) -> {
+            case Result.Ok<ArenaSession, String>(ArenaSession session) -> {
                 session.joinPlayer(player);
                 player.sendMessage(MSG.success("Opened session ")
                         .append(MSG.highlight("#" + session.id()))
                         .append(Component.text(" for arena ", NamedTextColor.GRAY))
                         .append(MSG.highlight(session.arenaName().value()))
                         .append(Component.text(".", NamedTextColor.GRAY)));
-                if (noSpawnsYet) {
+                if (session.arena().spawns().isEmpty()) {
                     player.sendMessage(MSG.info("This arena has no spawn points; run ")
                             .append(MSG.highlight("/arena addspawn"))
                             .append(Component.text(" to add one.", NamedTextColor.GRAY)));
                 }
             }
-            case ArenaResult.OpenSessionResult.NotFound(String requested) ->
-                    player.sendMessage(MSG.error("No arena named '" + requested + "' exists."));
-            case ArenaResult.OpenSessionResult.InvalidName(String reason) ->
-                    player.sendMessage(MSG.error(reason));
-            case ArenaResult.OpenSessionResult.SchematicMissing(String name) ->
-                    player.sendMessage(MSG.error("Schematic '" + name + "' was not found."));
-            case ArenaResult.OpenSessionResult.SchematicLoadFailed(String name, String message) ->
-                    player.sendMessage(MSG.error("Could not load schematic '" + name + "': " + message));
-            case ArenaResult.OpenSessionResult.AllocatorExhausted(int max) ->
-                    player.sendMessage(MSG.error("All " + max + " arena slots are in use; close a session and try again."));
-            case ArenaResult.OpenSessionResult.RegionFailed(String message) ->
-                    player.sendMessage(MSG.error("Could not register WorldGuard region: " + message));
-            case ArenaResult.OpenSessionResult.InvalidFlag(String flagName, String message) ->
-                    player.sendMessage(MSG.error("Could not apply flag '" + flagName + "': " + message));
-            case ArenaResult.OpenSessionResult.DependencyMissing(String message) ->
-                    player.sendMessage(MSG.error("Dependency missing: " + message));
+            case Result.Err<ArenaSession, String>(String message) ->
+                    player.sendMessage(MSG.error(message));
         }
     }
 
@@ -322,21 +299,18 @@ public final class ArenaCommand {
             return 0;
         }
         ArenaSession session = found.get();
-        return switch (session.joinPlayer(player)) {
-            case ArenaResult.JoinResult.Joined(ArenaSession s, boolean noSpawnsYet) -> {
-                player.sendMessage(MSG.success("Joined session ")
-                        .append(MSG.highlight("#" + s.id()))
-                        .append(Component.text(" for arena ", NamedTextColor.GRAY))
-                        .append(MSG.highlight(s.arenaName().value()))
-                        .append(Component.text(".", NamedTextColor.GRAY)));
-                if (noSpawnsYet) {
-                    player.sendMessage(MSG.info("This arena has no spawn points; run ")
-                            .append(MSG.highlight("/arena addspawn"))
-                            .append(Component.text(" to add one.", NamedTextColor.GRAY)));
-                }
-                yield Command.SINGLE_SUCCESS;
-            }
-        };
+        session.joinPlayer(player);
+        player.sendMessage(MSG.success("Joined session ")
+                .append(MSG.highlight("#" + session.id()))
+                .append(Component.text(" for arena ", NamedTextColor.GRAY))
+                .append(MSG.highlight(session.arenaName().value()))
+                .append(Component.text(".", NamedTextColor.GRAY)));
+        if (session.arena().spawns().isEmpty()) {
+            player.sendMessage(MSG.info("This arena has no spawn points; run ")
+                    .append(MSG.highlight("/arena addspawn"))
+                    .append(Component.text(" to add one.", NamedTextColor.GRAY)));
+        }
+        return Command.SINGLE_SUCCESS;
     }
 
     private int handleSessions(CommandContext<CommandSourceStack> ctx) {
@@ -366,169 +340,136 @@ public final class ArenaCommand {
         if (maybe.isEmpty()) return 0;
         Player player = maybe.get();
         Optional<ArenaSession> session = manager.findSessionFor(player);
-        if (session.isEmpty()) {
+        if (session.isEmpty() || !session.get().leavePlayer(player)) {
             player.sendMessage(MSG.error("You are not currently in any arena session."));
             return 0;
         }
-        return switch (session.get().leavePlayer(player)) {
-            case ArenaResult.LeaveResult.Returned ignored -> {
-                player.sendMessage(MSG.success("Returned to your previous location."));
-                yield Command.SINGLE_SUCCESS;
-            }
-            case ArenaResult.LeaveResult.NoActiveSession ignored -> {
-                player.sendMessage(MSG.error("You are not currently in any arena session."));
-                yield 0;
-            }
-        };
+        player.sendMessage(MSG.success("Returned to your previous location."));
+        return Command.SINGLE_SUCCESS;
     }
 
     private int handleAddSpawnNoArgs(CommandContext<CommandSourceStack> ctx) {
-        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "add a spawn point");
-        if (maybe.isEmpty()) return 0;
-        Player player = maybe.get();
-        Optional<ArenaSession> session = manager.findSessionFor(player);
-        if (session.isEmpty()) {
-            player.sendMessage(MSG.error("You must be inside an arena session to add spawns."));
-            return 0;
-        }
-        return reportAddSpawn(player, session.get().addSpawnAtPlayer(player));
+        return withSession(ctx, "add a spawn point",
+                (player, session) -> reportAddSpawn(player, session, session.addSpawnAtPlayer(player)));
     }
 
     private int handleAddSpawnXYZ(CommandContext<CommandSourceStack> ctx) {
-        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "add a spawn point");
-        if (maybe.isEmpty()) return 0;
-        Player player = maybe.get();
-        Optional<ArenaSession> session = manager.findSessionFor(player);
-        if (session.isEmpty()) {
-            player.sendMessage(MSG.error("You must be inside an arena session to add spawns."));
-            return 0;
-        }
         double x = DoubleArgumentType.getDouble(ctx, "x");
         double y = DoubleArgumentType.getDouble(ctx, "y");
         double z = DoubleArgumentType.getDouble(ctx, "z");
-        return reportAddSpawn(player, session.get().addSpawnExplicit(player, x, y, z, null, null));
+        return withSession(ctx, "add a spawn point",
+                (player, session) -> reportAddSpawn(player, session,
+                        session.addSpawnExplicit(player, x, y, z, null, null)));
     }
 
     private int handleAddSpawnFull(CommandContext<CommandSourceStack> ctx) {
-        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "add a spawn point");
-        if (maybe.isEmpty()) return 0;
-        Player player = maybe.get();
-        Optional<ArenaSession> session = manager.findSessionFor(player);
-        if (session.isEmpty()) {
-            player.sendMessage(MSG.error("You must be inside an arena session to add spawns."));
-            return 0;
-        }
         double x = DoubleArgumentType.getDouble(ctx, "x");
         double y = DoubleArgumentType.getDouble(ctx, "y");
         double z = DoubleArgumentType.getDouble(ctx, "z");
         float yaw = FloatArgumentType.getFloat(ctx, "yaw");
         float pitch = FloatArgumentType.getFloat(ctx, "pitch");
-        return reportAddSpawn(player, session.get().addSpawnExplicit(player, x, y, z, yaw, pitch));
+        return withSession(ctx, "add a spawn point",
+                (player, session) -> reportAddSpawn(player, session,
+                        session.addSpawnExplicit(player, x, y, z, yaw, pitch)));
     }
 
-    private int reportAddSpawn(Player player, ArenaResult.AddSpawnResult result) {
+    private int reportAddSpawn(Player player, ArenaSession session, Result<Void, String> result) {
         return switch (result) {
-            case ArenaResult.AddSpawnResult.Added(Arena arena, int oneBasedIndex) -> {
+            case Result.Ok<Void, String> ok -> {
+                int oneBasedIndex = session.arena().spawns().size();
                 player.sendMessage(MSG.success("Added spawn ")
                         .append(MSG.highlight(String.valueOf(oneBasedIndex)))
                         .append(Component.text(" to arena ", NamedTextColor.GRAY))
-                        .append(MSG.highlight(arena.name().value()))
+                        .append(MSG.highlight(session.arenaName().value()))
                         .append(Component.text(".", NamedTextColor.GRAY)));
                 yield Command.SINGLE_SUCCESS;
             }
-            case ArenaResult.AddSpawnResult.IoError(String message) -> {
-                player.sendMessage(MSG.error("Could not save spawn: " + message));
+            case Result.Err<Void, String>(String message) -> {
+                player.sendMessage(MSG.error(message));
                 yield 0;
             }
         };
     }
 
     private int handleListSpawn(CommandContext<CommandSourceStack> ctx) {
-        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "list spawn points");
-        if (maybe.isEmpty()) return 0;
-        Player player = maybe.get();
-        Optional<ArenaSession> session = manager.findSessionFor(player);
-        if (session.isEmpty()) {
-            player.sendMessage(MSG.error("You must be inside an arena session to list spawns."));
-            return 0;
-        }
-        return switch (session.get().listSpawns()) {
-            case ArenaResult.ListSpawnResult.Listed(Arena arena, List<SpawnPoint> spawns) -> {
-                if (spawns.isEmpty()) {
-                    player.sendMessage(MSG.info("No spawn points defined in arena ")
-                            .append(MSG.highlight(arena.name().value()))
-                            .append(Component.text(".", NamedTextColor.GRAY)));
-                    yield Command.SINGLE_SUCCESS;
-                }
-                player.sendMessage(MSG.info("Spawn points in arena ")
-                        .append(MSG.highlight(arena.name().value()))
-                        .append(Component.text(":", NamedTextColor.GRAY)));
-                for (int i = 0; i < spawns.size(); i++) {
-                    player.sendMessage(MSG.info("  ")
-                            .append(MSG.highlight(String.valueOf(i + 1)))
-                            .append(Component.text(": " + formatSpawn(spawns.get(i)), NamedTextColor.GRAY)));
-                }
-                yield Command.SINGLE_SUCCESS;
+        return withSession(ctx, "list spawn points", (player, session) -> {
+            List<SpawnPoint> spawns = session.arena().spawns();
+            String arenaName = session.arenaName().value();
+            if (spawns.isEmpty()) {
+                player.sendMessage(MSG.info("No spawn points defined in arena ")
+                        .append(MSG.highlight(arenaName))
+                        .append(Component.text(".", NamedTextColor.GRAY)));
+                return Command.SINGLE_SUCCESS;
             }
-        };
+            player.sendMessage(MSG.info("Spawn points in arena ")
+                    .append(MSG.highlight(arenaName))
+                    .append(Component.text(":", NamedTextColor.GRAY)));
+            for (int i = 0; i < spawns.size(); i++) {
+                player.sendMessage(MSG.info("  ")
+                        .append(MSG.highlight(String.valueOf(i + 1)))
+                        .append(Component.text(": " + formatSpawn(spawns.get(i)), NamedTextColor.GRAY)));
+            }
+            return Command.SINGLE_SUCCESS;
+        });
     }
 
     private int handleVisitSpawn(CommandContext<CommandSourceStack> ctx) {
-        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "visit a spawn point");
-        if (maybe.isEmpty()) return 0;
-        Player player = maybe.get();
-        Optional<ArenaSession> session = manager.findSessionFor(player);
-        if (session.isEmpty()) {
-            player.sendMessage(MSG.error("You must be inside an arena session to visit spawns."));
-            return 0;
-        }
         int index = IntegerArgumentType.getInteger(ctx, "index");
-        return switch (session.get().visitSpawn(player, index)) {
-            case ArenaResult.VisitSpawnResult.Visited(Arena arena, int oneBasedIndex, SpawnPoint spawn) -> {
+        return withSession(ctx, "visit a spawn point", (player, session) -> switch (session.visitSpawn(player, index)) {
+            case Result.Ok<SpawnPoint, String> ok -> {
                 player.sendMessage(MSG.success("Teleported to spawn ")
-                        .append(MSG.highlight(String.valueOf(oneBasedIndex)))
+                        .append(MSG.highlight(String.valueOf(index)))
                         .append(Component.text(" of arena ", NamedTextColor.GRAY))
-                        .append(MSG.highlight(arena.name().value()))
+                        .append(MSG.highlight(session.arenaName().value()))
                         .append(Component.text(".", NamedTextColor.GRAY)));
                 yield Command.SINGLE_SUCCESS;
             }
-            case ArenaResult.VisitSpawnResult.IndexOutOfRange(int requested, int size) -> {
-                player.sendMessage(MSG.error("No spawn at index " + requested
-                        + " (arena has " + size + " spawn point" + (size == 1 ? "" : "s") + ")."));
+            case Result.Err<SpawnPoint, String>(String message) -> {
+                player.sendMessage(MSG.error(message));
                 yield 0;
             }
-        };
+        });
     }
 
     private int handleRemoveSpawn(CommandContext<CommandSourceStack> ctx) {
-        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "remove a spawn point");
+        int index = IntegerArgumentType.getInteger(ctx, "index");
+        return withSession(ctx, "remove a spawn point", (player, session) -> switch (session.removeSpawn(index)) {
+            case Result.Ok<SpawnPoint, String> ok -> {
+                player.sendMessage(MSG.success("Removed spawn ")
+                        .append(MSG.highlight(String.valueOf(index)))
+                        .append(Component.text(" from arena ", NamedTextColor.GRAY))
+                        .append(MSG.highlight(session.arenaName().value()))
+                        .append(Component.text(".", NamedTextColor.GRAY)));
+                yield Command.SINGLE_SUCCESS;
+            }
+            case Result.Err<SpawnPoint, String>(String message) -> {
+                player.sendMessage(MSG.error(message));
+                yield 0;
+            }
+        });
+    }
+
+    /**
+     * Helper for spawn-edit handlers. Resolves the running player and the
+     * session they are inside, sending an error message and returning 0 if
+     * either lookup fails. On success delegates to {@code action}.
+     */
+    private int withSession(CommandContext<CommandSourceStack> ctx, String operationDescription,
+                            SessionAction action) {
+        Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, operationDescription);
         if (maybe.isEmpty()) return 0;
         Player player = maybe.get();
         Optional<ArenaSession> session = manager.findSessionFor(player);
         if (session.isEmpty()) {
-            player.sendMessage(MSG.error("You must be inside an arena session to remove spawns."));
+            player.sendMessage(MSG.error("You must be inside an arena session to " + operationDescription + "."));
             return 0;
         }
-        int index = IntegerArgumentType.getInteger(ctx, "index");
-        return switch (session.get().removeSpawn(index)) {
-            case ArenaResult.RemoveSpawnResult.Removed(Arena arena, int oneBasedIndex, SpawnPoint spawn) -> {
-                player.sendMessage(MSG.success("Removed spawn ")
-                        .append(MSG.highlight(String.valueOf(oneBasedIndex)))
-                        .append(Component.text(" from arena ", NamedTextColor.GRAY))
-                        .append(MSG.highlight(arena.name().value()))
-                        .append(Component.text(".", NamedTextColor.GRAY)));
-                yield Command.SINGLE_SUCCESS;
-            }
-            case ArenaResult.RemoveSpawnResult.IndexOutOfRange(int requested, int size) -> {
-                player.sendMessage(MSG.error("No spawn at index " + requested
-                        + " (arena has " + size + " spawn point" + (size == 1 ? "" : "s") + ")."));
-                yield 0;
-            }
-            case ArenaResult.RemoveSpawnResult.IoError(String message) -> {
-                player.sendMessage(MSG.error("Could not remove spawn: " + message));
-                yield 0;
-            }
-        };
+        return action.run(player, session.get());
+    }
+
+    @FunctionalInterface
+    private interface SessionAction {
+        int run(Player player, ArenaSession session);
     }
 
     private int handleHelp(CommandContext<CommandSourceStack> ctx) {

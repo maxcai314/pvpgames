@@ -1,10 +1,11 @@
 package ax.xz.max.pvpgames.kit.command;
 
+import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.command.CommandSenders;
 import ax.xz.max.pvpgames.command.MessageStyle;
 import ax.xz.max.pvpgames.kit.Kit;
+import ax.xz.max.pvpgames.kit.KitCreation;
 import ax.xz.max.pvpgames.kit.KitName;
-import ax.xz.max.pvpgames.kit.KitResult;
 import ax.xz.max.pvpgames.kit.KitService;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -34,8 +35,9 @@ import java.util.Optional;
  * {@code .requires(...)}; Brigadier hides nodes the source cannot use, so
  * unauthorized players see "Unknown command" rather than a permission error.
  *
- * <p>Handlers translate {@link KitResult} variants into Adventure
- * {@link Component} messages via the shared {@link MessageStyle}.
+ * <p>Handlers consume {@link Result} values from {@link KitService}; the
+ * service pre-formats every error message, so the common error path is a
+ * one-liner: send {@code MSG.error(msg)} and return.
  */
 public final class KitCommand {
 
@@ -116,21 +118,14 @@ public final class KitCommand {
         Player player = maybe.get();
         String rawName = StringArgumentType.getString(ctx, "name");
         return switch (service.create(player, rawName)) {
-            case KitResult.CreateResult.Created(Kit kit, boolean overwrote) -> {
-                String verb = overwrote ? "Replaced" : "Created";
-                player.sendMessage(MSG.success(verb + " kit ").append(MSG.highlight(kit.name().value())));
+            case Result.Ok<KitCreation, String>(KitCreation creation) -> {
+                String verb = creation.replaced() ? "Replaced" : "Created";
+                player.sendMessage(MSG.success(verb + " kit ")
+                        .append(MSG.highlight(creation.kit().name().value())));
                 yield Command.SINGLE_SUCCESS;
             }
-            case KitResult.CreateResult.InvalidName(String reason) -> {
-                player.sendMessage(MSG.error(reason));
-                yield 0;
-            }
-            case KitResult.CreateResult.EmptyInventory ignored -> {
-                player.sendMessage(MSG.error("Your inventory is empty; nothing to save."));
-                yield 0;
-            }
-            case KitResult.CreateResult.IoError(String message) -> {
-                player.sendMessage(MSG.error("Could not save kit: " + message));
+            case Result.Err<KitCreation, String>(String message) -> {
+                player.sendMessage(MSG.error(message));
                 yield 0;
             }
         };
@@ -142,16 +137,12 @@ public final class KitCommand {
         Player player = maybe.get();
         String rawName = StringArgumentType.getString(ctx, "name");
         return switch (service.load(player, rawName)) {
-            case KitResult.LoadResult.Loaded(Kit kit) -> {
+            case Result.Ok<Kit, String>(Kit kit) -> {
                 player.sendMessage(MSG.success("Loaded kit ").append(MSG.highlight(kit.name().value())));
                 yield Command.SINGLE_SUCCESS;
             }
-            case KitResult.LoadResult.NotFound(String requested) -> {
-                player.sendMessage(MSG.error("No kit named '" + requested + "' exists."));
-                yield 0;
-            }
-            case KitResult.LoadResult.InvalidName(String reason) -> {
-                player.sendMessage(MSG.error(reason));
+            case Result.Err<Kit, String>(String message) -> {
+                player.sendMessage(MSG.error(message));
                 yield 0;
             }
         };
@@ -161,20 +152,16 @@ public final class KitCommand {
         CommandSender sender = ctx.getSource().getSender();
         String rawName = StringArgumentType.getString(ctx, "name");
         return switch (service.delete(rawName)) {
-            case KitResult.DeleteResult.Deleted(KitName name) -> {
-                sender.sendMessage(MSG.success("Deleted kit ").append(MSG.highlight(name.value())));
-                yield Command.SINGLE_SUCCESS;
-            }
-            case KitResult.DeleteResult.NotFound(String requested) -> {
-                sender.sendMessage(MSG.error("No kit named '" + requested + "' exists."));
+            case Result.Ok<Boolean, String>(Boolean deleted) -> {
+                if (deleted) {
+                    sender.sendMessage(MSG.success("Deleted kit ").append(MSG.highlight(rawName)));
+                    yield Command.SINGLE_SUCCESS;
+                }
+                sender.sendMessage(MSG.error("No kit named '" + rawName + "' exists."));
                 yield 0;
             }
-            case KitResult.DeleteResult.InvalidName(String reason) -> {
-                sender.sendMessage(MSG.error(reason));
-                yield 0;
-            }
-            case KitResult.DeleteResult.IoError(String message) -> {
-                sender.sendMessage(MSG.error("Could not delete kit: " + message));
+            case Result.Err<Boolean, String>(String message) -> {
+                sender.sendMessage(MSG.error(message));
                 yield 0;
             }
         };

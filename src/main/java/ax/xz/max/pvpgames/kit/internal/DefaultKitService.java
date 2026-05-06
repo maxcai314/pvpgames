@@ -3,10 +3,10 @@ package ax.xz.max.pvpgames.kit.internal;
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.kit.InventorySnapshot;
 import ax.xz.max.pvpgames.kit.Kit;
+import ax.xz.max.pvpgames.kit.KitCreation;
 import ax.xz.max.pvpgames.kit.KitName;
 import ax.xz.max.pvpgames.kit.KitPersistenceException;
 import ax.xz.max.pvpgames.kit.KitRepository;
-import ax.xz.max.pvpgames.kit.KitResult;
 import ax.xz.max.pvpgames.kit.KitService;
 import org.bukkit.entity.Player;
 
@@ -19,10 +19,11 @@ import java.util.Optional;
 /**
  * Default {@link KitService} implementation.
  *
- * <p>Validation, snapshot capture, and inventory mutation happen on the calling
- * thread (which must be the server main thread for any method that touches a
- * {@link Player}). Persistence is delegated to {@link KitRepository}, whose
- * implementation handles caching and durability.
+ * <p>Validation, snapshot capture, and inventory mutation happen on the
+ * calling thread (which must be the server main thread for any method that
+ * touches a {@link Player}). Persistence is delegated to {@link KitRepository}.
+ * Error messages are pre-formatted here so callers can surface them
+ * unchanged.
  */
 public final class DefaultKitService implements KitService {
 
@@ -35,64 +36,61 @@ public final class DefaultKitService implements KitService {
     }
 
     @Override
-    public KitResult.CreateResult create(Player owner, String rawName) {
+    public Result<KitCreation, String> create(Player owner, String rawName) {
         Objects.requireNonNull(owner, "owner");
 
         Result<KitName, String> parsed = KitName.tryParse(rawName);
         if (parsed instanceof Result.Err<KitName, String>(String reason)) {
-            return new KitResult.CreateResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         KitName name = ((Result.Ok<KitName, String>) parsed).val();
 
         InventorySnapshot snapshot = InventorySnapshot.captureFrom(owner);
         if (snapshot.isEmpty()) {
-            return new KitResult.CreateResult.EmptyInventory();
+            return new Result.Err<>("Your inventory is empty; nothing to save.");
         }
 
         Kit kit = new Kit(name, snapshot, clock.instant(), owner.getUniqueId());
         try {
             boolean replaced = repository.save(kit);
-            return new KitResult.CreateResult.Created(kit, replaced);
+            return new Result.Ok<>(new KitCreation(kit, replaced));
         } catch (KitPersistenceException ex) {
-            return new KitResult.CreateResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not save kit: " + ex.getMessage());
         }
     }
 
     @Override
-    public KitResult.LoadResult load(Player target, String rawName) {
+    public Result<Kit, String> load(Player target, String rawName) {
         Objects.requireNonNull(target, "target");
 
         Result<KitName, String> parsed = KitName.tryParse(rawName);
         if (parsed instanceof Result.Err<KitName, String>(String reason)) {
-            return new KitResult.LoadResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         KitName name = ((Result.Ok<KitName, String>) parsed).val();
 
         Optional<Kit> kit = repository.find(name);
         if (kit.isEmpty()) {
-            return new KitResult.LoadResult.NotFound(rawName);
+            return new Result.Err<>("No kit named '" + rawName + "' exists.");
         }
 
         target.closeInventory();
         kit.get().contents().applyTo(target);
-        return new KitResult.LoadResult.Loaded(kit.get());
+        return new Result.Ok<>(kit.get());
     }
 
     @Override
-    public KitResult.DeleteResult delete(String rawName) {
+    public Result<Boolean, String> delete(String rawName) {
         Result<KitName, String> parsed = KitName.tryParse(rawName);
         if (parsed instanceof Result.Err<KitName, String>(String reason)) {
-            return new KitResult.DeleteResult.InvalidName(reason);
+            return new Result.Err<>(reason);
         }
         KitName name = ((Result.Ok<KitName, String>) parsed).val();
 
         try {
-            boolean existed = repository.delete(name);
-            return existed
-                    ? new KitResult.DeleteResult.Deleted(name)
-                    : new KitResult.DeleteResult.NotFound(rawName);
+            return new Result.Ok<>(repository.delete(name));
         } catch (KitPersistenceException ex) {
-            return new KitResult.DeleteResult.IoError(ex.getMessage());
+            return new Result.Err<>("Could not delete kit: " + ex.getMessage());
         }
     }
 
