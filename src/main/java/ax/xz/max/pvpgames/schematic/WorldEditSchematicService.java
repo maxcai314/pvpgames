@@ -60,12 +60,6 @@ public final class WorldEditSchematicService implements SchematicService {
     }
 
     @Override
-    public boolean schematicExists(SchematicName schematicName) {
-        Objects.requireNonNull(schematicName, "schematicName");
-        return resolvePath(schematicName.value()) != null;
-    }
-
-    @Override
     public Promise<Result<Void, SchematicError>> pasteAtOrigin(
             SchematicName schematicName, World targetWorld, BlockVec3 origin) {
         Objects.requireNonNull(schematicName, "schematicName");

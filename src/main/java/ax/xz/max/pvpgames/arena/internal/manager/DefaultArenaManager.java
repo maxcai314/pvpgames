@@ -12,7 +12,6 @@ import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.ArenaResult;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.internal.session.DefaultArenaSession;
-import ax.xz.max.pvpgames.command.NameParseResult;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.schematic.SchematicError;
 import ax.xz.max.pvpgames.schematic.SchematicName;
@@ -107,17 +106,17 @@ public final class DefaultArenaManager implements ArenaManager {
     public ArenaResult.CreateResult create(CommandSender creator, String rawArenaName, String rawSchematicName) {
         Objects.requireNonNull(creator, "creator");
 
-        NameParseResult<ArenaName> parsedName = ArenaName.tryParse(rawArenaName);
-        if (parsedName instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
+        Result<ArenaName, String> parsedName = ArenaName.tryParse(rawArenaName);
+        if (parsedName instanceof Result.Err<ArenaName, String>(String reason)) {
             return new ArenaResult.CreateResult.InvalidName(reason);
         }
-        ArenaName name = ((NameParseResult.Valid<ArenaName>) parsedName).name();
+        ArenaName name = ((Result.Ok<ArenaName, String>) parsedName).val();
 
-        NameParseResult<SchematicName> parsedSchematic = SchematicName.tryParse(rawSchematicName);
-        if (parsedSchematic instanceof NameParseResult.Invalid<SchematicName>(String reason)) {
+        Result<SchematicName, String> parsedSchematic = SchematicName.tryParse(rawSchematicName);
+        if (parsedSchematic instanceof Result.Err<SchematicName, String>(String reason)) {
             return new ArenaResult.CreateResult.InvalidSchematic(reason);
         }
-        SchematicName schematic = ((NameParseResult.Valid<SchematicName>) parsedSchematic).name();
+        SchematicName schematic = ((Result.Ok<SchematicName, String>) parsedSchematic).val();
 
         Arena arena = new Arena(
                 name,
@@ -136,11 +135,11 @@ public final class DefaultArenaManager implements ArenaManager {
 
     @Override
     public ArenaResult.DeleteResult delete(String rawArenaName) {
-        NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
-        if (parsed instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
+        Result<ArenaName, String> parsed = ArenaName.tryParse(rawArenaName);
+        if (parsed instanceof Result.Err<ArenaName, String>(String reason)) {
             return new ArenaResult.DeleteResult.InvalidName(reason);
         }
-        ArenaName name = ((NameParseResult.Valid<ArenaName>) parsed).name();
+        ArenaName name = ((Result.Ok<ArenaName, String>) parsed).val();
 
         try {
             boolean existed = repository.delete(name);
@@ -162,8 +161,8 @@ public final class DefaultArenaManager implements ArenaManager {
 
     @Override
     public Optional<Arena> find(String rawArenaName) {
-        NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
-        if (parsed instanceof NameParseResult.Valid<ArenaName>(ArenaName name)) {
+        Result<ArenaName, String> parsed = ArenaName.tryParse(rawArenaName);
+        if (parsed instanceof Result.Ok<ArenaName, String>(ArenaName name)) {
             return repository.find(name);
         }
         return Optional.empty();
@@ -194,11 +193,11 @@ public final class DefaultArenaManager implements ArenaManager {
      * failure.
      */
     private Result<Prelude, ArenaResult.OpenSessionResult> prepareOpen(String rawArenaName) {
-        NameParseResult<ArenaName> parsed = ArenaName.tryParse(rawArenaName);
-        if (parsed instanceof NameParseResult.Invalid<ArenaName>(String reason)) {
+        Result<ArenaName, String> parsed = ArenaName.tryParse(rawArenaName);
+        if (parsed instanceof Result.Err<ArenaName, String>(String reason)) {
             return new Result.Err<>(new ArenaResult.OpenSessionResult.InvalidName(reason));
         }
-        ArenaName arenaName = ((NameParseResult.Valid<ArenaName>) parsed).name();
+        ArenaName arenaName = ((Result.Ok<ArenaName, String>) parsed).val();
 
         Optional<Arena> maybeArena = repository.find(arenaName);
         if (maybeArena.isEmpty()) {

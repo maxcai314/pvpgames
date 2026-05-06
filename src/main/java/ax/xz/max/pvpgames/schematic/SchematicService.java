@@ -32,6 +32,4 @@ public interface SchematicService {
     Promise<Result<Void, SchematicError>> pasteAtOrigin(
             SchematicName schematicName, World targetWorld, BlockVec3 origin);
 
-    /** Cheap synchronous existence check; safe to call from the main thread. */
-    boolean schematicExists(SchematicName schematicName);
 }

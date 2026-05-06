@@ -1,6 +1,6 @@
 package ax.xz.max.pvpgames.schematic;
 
-import ax.xz.max.pvpgames.command.NameParseResult;
+import ax.xz.max.async.Result;
 
 import java.util.Objects;
 
@@ -37,17 +37,18 @@ public record SchematicName(String value) {
 
     /**
      * Attempts to construct a {@link SchematicName} from raw user input.
-     * Returns the rejection reason in the result for use in player-facing
-     * messages.
+     *
+     * @return the parsed name result, or an error message that can be shown
+     *         to players
      */
-    public static NameParseResult<SchematicName> tryParse(String raw) {
+    public static Result<SchematicName, String> tryParse(String raw) {
         if (raw == null || raw.isEmpty()) {
-            return new NameParseResult.Invalid<>("Schematic name cannot be empty.");
+            return new Result.Err<>("Schematic name cannot be empty.");
         }
         try {
-            return new NameParseResult.Valid<>(new SchematicName(raw));
+            return new Result.Ok<>(new SchematicName(raw));
         } catch (IllegalArgumentException ex) {
-            return new NameParseResult.Invalid<>(ex.getMessage());
+            return new Result.Err<>(ex.getMessage());
         }
     }
 }

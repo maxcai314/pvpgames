@@ -1,6 +1,6 @@
 package ax.xz.max.pvpgames.arena;
 
-import ax.xz.max.pvpgames.command.NameParseResult;
+import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.naming.ResourceNames;
 
 import java.nio.file.Path;
@@ -29,17 +29,19 @@ public record ArenaName(String value) {
     }
 
     /**
-     * Attempts to construct an {@link ArenaName} from raw user input. Returns the
-     * reason for rejection in the result for use in player-facing messages.
+     * Attempts to construct an {@link ArenaName} from raw user input.
+     *
+     * @return the parsed name result, or an error message that can be shown
+     *         to players
      */
-    public static NameParseResult<ArenaName> tryParse(String raw) {
+    public static Result<ArenaName, String> tryParse(String raw) {
         if (raw == null || raw.isEmpty()) {
-            return new NameParseResult.Invalid<>("Arena name cannot be empty.");
+            return new Result.Err<>("Arena name cannot be empty.");
         }
         try {
-            return new NameParseResult.Valid<>(new ArenaName(raw));
+            return new Result.Ok<>(new ArenaName(raw));
         } catch (IllegalArgumentException ex) {
-            return new NameParseResult.Invalid<>(ex.getMessage());
+            return new Result.Err<>(ex.getMessage());
         }
     }
 

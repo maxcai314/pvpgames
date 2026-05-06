@@ -22,9 +22,4 @@ public final class UnavailableSchematicService implements SchematicService {
             SchematicName schematicName, World targetWorld, BlockVec3 origin) {
         return Promise.completedFuture(new Result.Err<>(new SchematicError.LoadFailed(MESSAGE)));
     }
-
-    @Override
-    public boolean schematicExists(SchematicName schematicName) {
-        return false;
-    }
 }

@@ -6,5 +6,4 @@ package ax.xz.max.pvpgames.schematic;
  * {@link SchematicService} interface.
  */
 public record BlockVec3(int x, int y, int z) {
-    public static final BlockVec3 ORIGIN = new BlockVec3(0, 0, 0);
 }
