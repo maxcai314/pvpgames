@@ -55,6 +55,7 @@ public final class BukkitWorldGuardService implements WorldGuardService {
      * Regions this service still considers open (created but not yet
      * removed). Used by {@link #shutdown()} to clear leftover sessions if
      * the manager did not close them cleanly.
+     * todo: should probably be handled by the ArenaManager instead
      */
     private final Set<RegionRef> openRegions = ConcurrentHashMap.newKeySet();
 

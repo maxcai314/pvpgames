@@ -5,28 +5,17 @@ import ax.xz.max.pvpgames.schematic.SchematicName;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
  * A persisted arena definition: a named reference to a WorldEdit schematic, an
  * ordered list of {@link SpawnPoint}s expressed as offsets from the arena's
- * allocated origin, and a generic map of WorldGuard flag names to their raw
- * textual values.
+ * allocated origin, and a typed bag of WorldGuard flag overrides.
  *
  * <p>Immutable. All "mutators" ({@link #addSpawn(SpawnPoint)},
- * {@link #removeSpawnAt(int)}, {@link #withFlags(Map)}) return a new
+ * {@link #removeSpawnAt(int)}, {@link #withFlags(ArenaFlags)}) return a new
  * {@link Arena}; persisting the new value is the manager's responsibility.
- *
- * <p>The {@code flags} map is intentionally unstructured: keys are flag names
- * and values are whatever string the WorldGuard flag's own
- * {@code parseInput} accepts (typically {@code allow}/{@code deny} for state
- * flags, {@code true}/{@code false} for boolean flags, integers for integer
- * flags). Validation is deferred to session creation, where the WorldGuard
- * service parses each entry and reports unknown flag names or invalid values
- * via the open-session result type. This keeps the arena format free of
- * upfront, plugin-version-specific knowledge of which flags exist.
  *
  * <p>{@code createdBy} is the {@link UUID} of the player who created the
  * arena; it may be {@code null} if the arena was created by the console or
@@ -37,7 +26,7 @@ public record Arena(
         ArenaName name,
         SchematicName schematicName,
         List<SpawnPoint> spawns,
-        Map<String, String> flags,
+        ArenaFlags flags,
         Instant createdAt,
         UUID createdBy
 ) {
@@ -50,7 +39,6 @@ public record Arena(
         Objects.requireNonNull(createdAt, "createdAt");
         // createdBy is intentionally nullable
         spawns = List.copyOf(spawns);
-        flags = Map.copyOf(flags);
     }
 
     /**
@@ -84,11 +72,8 @@ public record Arena(
         return new Arena(name, schematicName, updated, flags, createdAt, createdBy);
     }
 
-    /**
-     * Returns a copy of this arena with the WorldGuard flag map replaced by
-     * {@code newFlags}.
-     */
-    public Arena withFlags(Map<String, String> newFlags) {
+    /** Returns a copy of this arena with the WorldGuard flag set replaced. */
+    public Arena withFlags(ArenaFlags newFlags) {
         Objects.requireNonNull(newFlags, "newFlags");
         return new Arena(name, schematicName, spawns, newFlags, createdAt, createdBy);
     }

@@ -62,7 +62,7 @@ public final class ArenaAllocator {
             slot = candidate;
         }
         allocated.set(slot);
-        return Optional.of(new Allocation(slot, originOf(slot)));
+        return Optional.of(buildAllocation(slot));
     }
 
     /** Releases a previously allocated slot so it can be re-used. */
@@ -74,29 +74,22 @@ public final class ArenaAllocator {
         freed.addFirst(slotIndex);
     }
 
-    /** Returns the origin coordinate for {@code slotIndex}. */
-    public BlockVec3 originOf(int slotIndex) {
-        return new BlockVec3(slotIndex * STRIDE, BASE_Y, 0);
-    }
-
-    /** Returns the inclusive minimum corner of {@code slotIndex}'s cuboid. */
-    public BlockVec3 minOf(int slotIndex) {
-        BlockVec3 origin = originOf(slotIndex);
-        return new BlockVec3(origin.x() - HALF_EXTENT, world.getMinHeight(), origin.z() - HALF_EXTENT);
-    }
-
-    /** Returns the inclusive maximum corner of {@code slotIndex}'s cuboid. */
-    public BlockVec3 maxOf(int slotIndex) {
-        BlockVec3 origin = originOf(slotIndex);
-        return new BlockVec3(origin.x() + HALF_EXTENT, world.getMaxHeight() - 1, origin.z() + HALF_EXTENT);
+    /**
+     * Computes the geometry for a slot. Origin sits on the +X grid line at
+     * {@link #BASE_Y}; the cuboid extends {@link #HALF_EXTENT} blocks
+     * horizontally and spans the world's full vertical range.
+     */
+    private Allocation buildAllocation(int slotIndex) {
+        BlockVec3 origin = new BlockVec3(slotIndex * STRIDE, BASE_Y, 0);
+        BlockVec3 min = new BlockVec3(origin.x() - HALF_EXTENT, world.getMinHeight(), origin.z() - HALF_EXTENT);
+        BlockVec3 max = new BlockVec3(origin.x() + HALF_EXTENT, world.getMaxHeight() - 1, origin.z() + HALF_EXTENT);
+        return new Allocation(slotIndex, origin, min, max);
     }
 
     /**
-     * One assignment of a slot to a session.
-     *
-     * @param slotIndex the slot that must be returned to {@link #release} when
-     *                  the session closes
-     * @param origin    where the schematic should be pasted
+     * One assignment of a slot to a session: the slot index that must be
+     * returned to {@link #release}, the origin to paste the schematic at,
+     * and the inclusive cuboid corners that bound the WorldGuard region.
      */
-    public record Allocation(int slotIndex, BlockVec3 origin) {}
+    public record Allocation(int slotIndex, BlockVec3 origin, BlockVec3 min, BlockVec3 max) {}
 }

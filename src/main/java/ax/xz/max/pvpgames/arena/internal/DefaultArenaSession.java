@@ -2,6 +2,7 @@ package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
+import ax.xz.max.pvpgames.arena.ArenaFlags;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
@@ -10,11 +11,14 @@ import ax.xz.max.pvpgames.arena.SpawnPoint;
 import ax.xz.max.pvpgames.player.PlayerStateSnapshot;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.worldguard.ProtectedArenaRegion;
+import ax.xz.max.pvpgames.worldguard.WorldGuardException;
+import ax.xz.max.pvpgames.worldguard.WorldGuardService;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -36,6 +40,7 @@ public final class DefaultArenaSession implements ArenaSession {
     private final ProtectedArenaRegion region;
     private final ArenaRepository repository;
     private final PlayerStateCache playerStateCache;
+    private final WorldGuardService worldGuardService;
 
     private Arena arena;
 
@@ -47,7 +52,8 @@ public final class DefaultArenaSession implements ArenaSession {
             int slotIndex,
             ProtectedArenaRegion region,
             ArenaRepository repository,
-            PlayerStateCache playerStateCache) {
+            PlayerStateCache playerStateCache,
+            WorldGuardService worldGuardService) {
         this.id = id;
         this.arena = Objects.requireNonNull(arena, "arena");
         this.world = Objects.requireNonNull(world, "world");
@@ -56,6 +62,7 @@ public final class DefaultArenaSession implements ArenaSession {
         this.region = Objects.requireNonNull(region, "region");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.playerStateCache = Objects.requireNonNull(playerStateCache, "playerStateCache");
+        this.worldGuardService = Objects.requireNonNull(worldGuardService, "worldGuardService");
     }
 
     @Override
@@ -172,6 +179,33 @@ public final class DefaultArenaSession implements ArenaSession {
         }
         this.arena = updated;
         return new Result.Ok<>(removed);
+    }
+
+    @Override
+    public Result<Void, String> setFlag(String name, boolean value) {
+        ArenaFlags newFlags;
+        try {
+            newFlags = arena.flags().withFlag(name, value);
+        } catch (IllegalArgumentException ex) {
+            return new Result.Err<>(ex.getMessage());
+        }
+        Arena updated = arena.withFlags(newFlags);
+        try {
+            repository.save(updated);
+        } catch (ArenaPersistenceException ex) {
+            return new Result.Err<>("Could not save arena: " + ex.getMessage());
+        }
+        this.arena = updated;
+        // Push the new value into the live region so the change takes effect
+        // without reopening the session. Only the one updated flag is sent;
+        // other flags on the region keep their current values.
+        try {
+            worldGuardService.applyFlags(region, Map.of(name, value ? "allow" : "deny"));
+        } catch (WorldGuardException ex) {
+            return new Result.Err<>(
+                    "Saved arena, but could not update live WorldGuard region: " + ex.getMessage());
+        }
+        return new Result.Ok<>(null);
     }
 
     @Override

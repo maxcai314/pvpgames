@@ -4,6 +4,7 @@ import ax.xz.max.async.GameScheduler;
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaCreation;
+import ax.xz.max.pvpgames.arena.ArenaFlags;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaSession;
@@ -11,6 +12,7 @@ import ax.xz.max.pvpgames.arena.SpawnPoint;
 import ax.xz.max.pvpgames.command.CommandSenders;
 import ax.xz.max.pvpgames.command.MessageStyle;
 import com.mojang.brigadier.Command;
+import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.FloatArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -39,7 +41,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Brigadier command tree for {@code /arena create|delete|list|info|preview|join|sessions|leave|addspawn|listspawn|visitspawn|removespawn|help}.
+ * Brigadier command tree for {@code /arena create|delete|list|info|preview|join|sessions|leave|addspawn|listspawn|visitspawn|removespawn|setflag|help}.
  * todo: redesign command user experience (rename "preview" and stuff)
  * todo: possibly as several separate commands; creation of arenas themselves and creation of sessions should be separate
  * todo: also add commands to modify other properties such as worldguard flags
@@ -154,6 +156,12 @@ public final class ArenaCommand {
                         .requires(s -> s.getSender().hasPermission(PERM_MODIFY))
                         .then(Commands.argument("index", IntegerArgumentType.integer(1))
                                 .executes(this::handleRemoveSpawn)))
+                .then(Commands.literal("setflag")
+                        .requires(s -> s.getSender().hasPermission(PERM_MODIFY))
+                        .then(Commands.argument("flag", StringArgumentType.word())
+                                .suggests(ArenaCompletions.arenaFlagNames())
+                                .then(Commands.argument("value", BoolArgumentType.bool())
+                                        .executes(this::handleSetFlag))))
                 .build();
     }
 
@@ -240,12 +248,12 @@ public final class ArenaCommand {
         sender.sendMessage(MSG.info("Arena ").append(MSG.highlight(arena.name().value())));
         sender.sendMessage(MSG.info("  Schematic: ").append(MSG.highlight(arena.schematicName().value())));
         sender.sendMessage(MSG.info("  Spawn points: ").append(MSG.highlight(String.valueOf(arena.spawns().size()))));
-        sender.sendMessage(MSG.info("  Flags: ").append(MSG.highlight(String.valueOf(arena.flags().size()))));
-        for (Map.Entry<String, String> entry : arena.flags().entrySet()) {
+        sender.sendMessage(MSG.info("  Flags:"));
+        for (String flagName : ArenaFlags.FLAG_NAMES) {
             sender.sendMessage(MSG.info("    ")
-                    .append(MSG.highlight(entry.getKey()))
+                    .append(MSG.highlight(flagName))
                     .append(Component.text(" = ", NamedTextColor.GRAY))
-                    .append(MSG.highlight(entry.getValue())));
+                    .append(MSG.highlight(String.valueOf(arena.flags().readFlag(flagName)))));
         }
         sender.sendMessage(MSG.info("  Creator: ").append(MSG.highlight(creator)));
         sender.sendMessage(MSG.info("  Created: ").append(MSG.highlight(created)));
@@ -339,6 +347,10 @@ public final class ArenaCommand {
         Optional<Player> maybe = CommandSenders.requirePlayer(ctx.getSource(), MSG, "leave an arena");
         if (maybe.isEmpty()) return 0;
         Player player = maybe.get();
+        // todo: this should still work even if we can't pinpoint the exact session;
+        // we will still have a cached state available
+        // we can just check if the player is generally in this world, rather
+        // than a specific arena
         Optional<ArenaSession> session = manager.findSessionFor(player);
         if (session.isEmpty() || !session.get().leavePlayer(player)) {
             player.sendMessage(MSG.error("You are not currently in any arena session."));
@@ -449,6 +461,27 @@ public final class ArenaCommand {
         });
     }
 
+    private int handleSetFlag(CommandContext<CommandSourceStack> ctx) {
+        String flagName = StringArgumentType.getString(ctx, "flag");
+        boolean value = BoolArgumentType.getBool(ctx, "value");
+        return withSession(ctx, "set arena flags", (player, session) -> switch (session.setFlag(flagName, value)) {
+            case Result.Ok<Void, String> ok -> {
+                player.sendMessage(MSG.success("Set flag ")
+                        .append(MSG.highlight(flagName))
+                        .append(Component.text(" to ", NamedTextColor.GRAY))
+                        .append(MSG.highlight(String.valueOf(value)))
+                        .append(Component.text(" on arena ", NamedTextColor.GRAY))
+                        .append(MSG.highlight(session.arenaName().value()))
+                        .append(Component.text(".", NamedTextColor.GRAY)));
+                yield Command.SINGLE_SUCCESS;
+            }
+            case Result.Err<Void, String>(String message) -> {
+                player.sendMessage(MSG.error(message));
+                yield 0;
+            }
+        });
+    }
+
     /**
      * Helper for spawn-edit handlers. Resolves the running player and the
      * session they are inside, sending an error message and returning 0 if
@@ -498,6 +531,7 @@ public final class ArenaCommand {
             sender.sendMessage(MSG.helpEntry("/arena listspawn", "List spawn points."));
             sender.sendMessage(MSG.helpEntry("/arena visitspawn <index>", "Teleport to a spawn point."));
             sender.sendMessage(MSG.helpEntry("/arena removespawn <index>", "Remove a spawn point."));
+            sender.sendMessage(MSG.helpEntry("/arena setflag <flag> <true|false>", "Configure a WorldGuard flag on the arena."));
         }
         sender.sendMessage(MSG.helpEntry("/arena help", "Show this help."));
         return Command.SINGLE_SUCCESS;

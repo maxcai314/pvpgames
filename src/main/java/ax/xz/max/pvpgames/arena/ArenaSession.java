@@ -105,6 +105,19 @@ public interface ArenaSession {
     Result<SpawnPoint, String> removeSpawn(int oneBasedIndex);
 
     /**
+     * Updates one of the arena's configurable WorldGuard flags, persists
+     * the new value, and re-applies it to the live region so it takes
+     * effect without reopening the session.
+     *
+     * @param name  one of {@link ArenaFlags#FLAG_NAMES}; unknown names
+     *              return {@code Err} with a message listing valid names
+     * @param value {@code true} maps to WorldGuard's {@code allow} state,
+     *              {@code false} maps to {@code deny}
+     * @return Ok on success, Err with a player-facing message on failure
+     */
+    Result<Void, String> setFlag(String name, boolean value);
+
+    /**
      * Returns {@code true} when {@code player}'s current location is inside
      * the session's region.
      */

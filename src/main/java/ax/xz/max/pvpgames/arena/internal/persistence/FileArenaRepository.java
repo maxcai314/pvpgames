@@ -1,6 +1,7 @@
 package ax.xz.max.pvpgames.arena.internal.persistence;
 
 import ax.xz.max.pvpgames.arena.Arena;
+import ax.xz.max.pvpgames.arena.ArenaFlags;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
@@ -49,15 +50,18 @@ import java.util.concurrent.ConcurrentMap;
  * spawns:
  *   - { x: 0.5, y: 65.0, z: 0.5, yaw: 0.0, pitch: 0.0 }
  * flags:
- *   pvp: allow
- *   exit: deny
- *   natural-health-regen: deny
+ *   pvp: true
+ *   block-break: false
+ *   block-place: false
+ *   fall-damage: true
+ *   natural-health-regen: true
+ *   natural-hunger-drain: true
  * </pre>
  *
- * <p>The {@code flags} section is optional; missing maps to the empty map.
- * Spawn coordinates are stored as offsets from the session origin under the
- * rewritten arena system, but pre-rewrite YAML files round-trip unchanged
- * because legacy schematics were always pasted at {@code (0, 0, 0)}.
+ * <p>The {@code flags} section is optional; any flag not listed falls back
+ * to {@link ArenaFlags#defaults()}. Unknown flag names in the file are
+ * logged and skipped so adding or removing fields on {@link ArenaFlags}
+ * does not corrupt existing arenas.
  */
 public final class FileArenaRepository implements ArenaRepository {
 
@@ -203,16 +207,19 @@ public final class FileArenaRepository implements ArenaRepository {
     }
 
     /**
-     * Encodes the flag map as a {@link LinkedHashMap} so insertion order is
-     * preserved in the serialised YAML; this keeps diffs stable across saves.
+     * Encodes the flag set as a {@link LinkedHashMap} keyed by the canonical
+     * flag names; values are booleans so YAML emits {@code true}/{@code false}
+     * and admins can hand-edit without quoting.
      */
-    private static Map<String, Object> encodeFlags(Map<String, String> flags) {
-        Map<String, Object> out = new LinkedHashMap<>(flags.size());
-        out.putAll(flags);
+    private static Map<String, Object> encodeFlags(ArenaFlags flags) {
+        Map<String, Object> out = new LinkedHashMap<>(ArenaFlags.FLAG_NAMES.size());
+        for (String name : ArenaFlags.FLAG_NAMES) {
+            out.put(name, flags.readFlag(name));
+        }
         return out;
     }
 
-    private static Arena readArenaFile(Path file) throws IOException, InvalidConfigurationException {
+    private Arena readArenaFile(Path file) throws IOException, InvalidConfigurationException {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.load(file.toFile());
 
@@ -236,7 +243,7 @@ public final class FileArenaRepository implements ArenaRepository {
         Instant createdAt = readInstant(yaml.getString(KEY_CREATED_AT));
         UUID createdBy = readUuid(yaml.getString(KEY_CREATED_BY));
         List<SpawnPoint> spawns = readSpawns(yaml);
-        Map<String, String> flags = readFlags(yaml);
+        ArenaFlags flags = readFlags(yaml);
 
         return new Arena(name, schematic, spawns, flags, createdAt, createdBy);
     }
@@ -269,26 +276,25 @@ public final class FileArenaRepository implements ArenaRepository {
     }
 
     /**
-     * Reads the optional {@code flags} section. Values are coerced to
-     * {@link String} via {@link String#valueOf(Object)} so admins can write
-     * unquoted booleans / numbers in YAML and have them parsed correctly by
-     * WorldGuard's flag registry at session-open time.
+     * Reads the optional {@code flags} section into an {@link ArenaFlags}.
+     * Missing flags fall back to {@link ArenaFlags#defaults()}; unknown flag
+     * names in the file are logged and ignored so removing a field from
+     * {@code ArenaFlags} does not corrupt existing arenas.
      */
-    private static Map<String, String> readFlags(YamlConfiguration yaml) {
+    private ArenaFlags readFlags(YamlConfiguration yaml) {
         ConfigurationSection section = yaml.getConfigurationSection(KEY_FLAGS);
+        ArenaFlags result = ArenaFlags.defaults();
         if (section == null) {
-            return Map.of();
+            return result;
         }
-        Map<String, Object> raw = section.getValues(false);
-        if (raw.isEmpty()) {
-            return Map.of();
+        for (String key : section.getKeys(false)) {
+            try {
+                result = result.withFlag(key, section.getBoolean(key));
+            } catch (IllegalArgumentException ex) {
+                logger.warn("Ignoring unknown arena flag '{}' in YAML.", key);
+            }
         }
-        Map<String, String> out = new LinkedHashMap<>(raw.size());
-        for (Map.Entry<String, Object> entry : raw.entrySet()) {
-            if (entry.getValue() == null) continue;
-            out.put(entry.getKey(), String.valueOf(entry.getValue()));
-        }
-        return out;
+        return result;
     }
 
     private static double requireDouble(Map<?, ?> map, String key, int index) throws InvalidConfigurationException {

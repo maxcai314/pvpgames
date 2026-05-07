@@ -4,6 +4,7 @@ import ax.xz.max.async.Promise;
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaCreation;
+import ax.xz.max.pvpgames.arena.ArenaFlags;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
@@ -68,7 +69,7 @@ public final class UnavailableArenaManager implements ArenaManager {
                 name,
                 schematic,
                 List.of(),
-                Map.of(),
+                ArenaFlags.defaults(),
                 clock.instant(),
                 creator instanceof Player p ? p.getUniqueId() : null);
         try {

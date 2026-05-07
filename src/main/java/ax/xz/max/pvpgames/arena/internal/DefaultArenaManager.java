@@ -6,12 +6,12 @@ import ax.xz.max.async.Promise;
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
 import ax.xz.max.pvpgames.arena.ArenaCreation;
+import ax.xz.max.pvpgames.arena.ArenaFlags;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.ArenaSession;
-import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.schematic.SchematicError;
 import ax.xz.max.pvpgames.schematic.SchematicName;
 import ax.xz.max.pvpgames.schematic.SchematicService;
@@ -120,7 +120,7 @@ public final class DefaultArenaManager implements ArenaManager {
                 name,
                 schematic,
                 List.of(),
-                Map.of(),
+                ArenaFlags.defaults(),
                 clock.instant(),
                 creator instanceof Player p ? p.getUniqueId() : null);
         try {
@@ -227,29 +227,40 @@ public final class DefaultArenaManager implements ArenaManager {
 
         long sessionId = nextSessionId.getAndIncrement();
         String regionId = REGION_ID_PREFIX + sessionId;
-        BlockVec3 min = allocator.minOf(p.allocation().slotIndex());
-        BlockVec3 max = allocator.maxOf(p.allocation().slotIndex());
+        ArenaAllocator.Allocation allocation = p.allocation();
+
+        // todo: this stuff should all be abstracted somewhere in the worldguard
+        // todo: worldguard package should make an abstraction to handle this
+        // for example, in the future we might want arenas to set up using two
+        // inheriting regions, so that we can surround the arena in a no-build no-pearl zone
+        // to prevent players escaping.
+        // this type of detail should be hidden from this code
+        // and encapsulated in its own class.
+        // https://worldguard.enginehub.org/en/latest/regions/priorities/
 
         ProtectedArenaRegion region;
         try {
-            region = worldGuardService.createRegion(arenaWorld, regionId, min, max);
+            region = worldGuardService.createRegion(arenaWorld, regionId, allocation.min(), allocation.max());
         } catch (WorldGuardException ex) {
             allocator.release(p.allocation().slotIndex());
             return new Result.Err<>("Could not register WorldGuard region: " + ex.getMessage());
         }
 
+        // add mandatory baseline flags for region
+        Map<String, String> wgFlags = new LinkedHashMap<>(ArenaFlags.BASELINE_WG_FLAGS);
+        wgFlags.putAll(p.arena().flags().toWorldGuardFlags());
         try {
-            worldGuardService.applyFlags(region, p.arena().flags());
+            worldGuardService.applyFlags(region, wgFlags);
         } catch (WorldGuardException ex) {
             worldGuardService.removeRegion(arenaWorld, regionId);
             allocator.release(p.allocation().slotIndex());
-            String flagName = extractFlagName(ex.getMessage(), p.arena().flags());
+            String flagName = extractFlagName(ex.getMessage(), wgFlags);
             return new Result.Err<>("Could not apply flag '" + flagName + "': " + ex.getMessage());
         }
 
         DefaultArenaSession session = new DefaultArenaSession(
                 sessionId, p.arena(), arenaWorld, p.allocation().origin(), p.allocation().slotIndex(),
-                region, repository, playerStateCache);
+                region, repository, playerStateCache, worldGuardService);
         sessionPool.put(sessionId, session);
 
         logger.info("Opened arena session {} ('{}') at slot {} origin ({}, {}, {}).",
