@@ -20,6 +20,13 @@ import java.util.Map;
  * <p>Region-wide invariants like {@code exit: deny} live in
  * {@link #BASELINE_WG_FLAGS} instead of this record because they are not
  * something admins should be able to disable per-arena.
+ *
+ * todo: although these flags are what are applied when initializing the physical arena,
+ * in the game system, these are actually set by the duel config, not the arena.
+ * players will choose these settings when they choose the kit/gamemode,
+ * not when they choose an arena.
+ * This is more of a parameter that's used *when* we create an arena, not stored
+ * with the arena itself.
  */
 public record ArenaFlags(
         boolean pvp,
