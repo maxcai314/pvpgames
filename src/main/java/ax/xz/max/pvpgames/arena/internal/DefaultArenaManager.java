@@ -1,4 +1,4 @@
-package ax.xz.max.pvpgames.arena.internal.manager;
+package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.async.GameExecutor;
 import ax.xz.max.async.GameScheduler;
@@ -11,7 +11,6 @@ import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.ArenaSession;
-import ax.xz.max.pvpgames.arena.internal.session.DefaultArenaSession;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.schematic.SchematicError;
 import ax.xz.max.pvpgames.schematic.SchematicName;

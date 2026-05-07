@@ -1,7 +1,6 @@
-package ax.xz.max.pvpgames.arena.internal.manager;
+package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.pvpgames.player.PlayerStateSnapshot;
-import org.bukkit.GameMode;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;

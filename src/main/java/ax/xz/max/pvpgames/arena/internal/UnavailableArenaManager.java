@@ -1,4 +1,4 @@
-package ax.xz.max.pvpgames.arena.internal.manager;
+package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.async.Promise;
 import ax.xz.max.async.Result;

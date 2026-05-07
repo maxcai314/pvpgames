@@ -1,4 +1,4 @@
-package ax.xz.max.pvpgames.arena.internal.session;
+package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.async.Result;
 import ax.xz.max.pvpgames.arena.Arena;
@@ -7,7 +7,6 @@ import ax.xz.max.pvpgames.arena.ArenaPersistenceException;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.arena.SpawnPoint;
-import ax.xz.max.pvpgames.arena.internal.manager.PlayerStateCache;
 import ax.xz.max.pvpgames.player.PlayerStateSnapshot;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.worldguard.ProtectedArenaRegion;

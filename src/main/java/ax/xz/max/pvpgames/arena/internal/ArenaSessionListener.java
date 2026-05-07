@@ -1,4 +1,4 @@
-package ax.xz.max.pvpgames.arena.internal.listener;
+package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaSession;
@@ -21,6 +21,8 @@ import java.util.Optional;
  * {@link ArenaSession#leavePlayer(Player)} during the quit event we restore
  * them first, so what gets saved is their original world / location /
  * inventory / health.
+ *
+ * todo: should be created by DefaultArenaManager's constructor, should be an inner private class
  */
 public final class ArenaSessionListener implements Listener {
 

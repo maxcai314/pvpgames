@@ -1,4 +1,4 @@
-package ax.xz.max.pvpgames.arena.internal.manager;
+package ax.xz.max.pvpgames.arena.internal;
 
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import org.bukkit.World;
