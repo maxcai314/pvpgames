@@ -1,6 +1,8 @@
 package ax.xz.max.pvpgames;
 
 import ax.xz.max.async.GameScheduler;
+import ax.xz.max.gui.GuiService;
+import ax.xz.max.gui.test.TestGuiCommand;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
@@ -59,6 +61,7 @@ import java.util.List;
 public final class PvpgamesPlugin extends JavaPlugin {
 
     private GameScheduler gameScheduler;
+    private GuiService guiService;
 
     private WorldService worldService;
     private SchematicService schematicService;
@@ -78,6 +81,10 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
         // used as a dependency in systems for scheduling async tasks
         this.gameScheduler = new GameScheduler(this);
+
+        // single Bukkit listener routing inventory events to GuiSessions;
+        // dependency-injected into every GuiSession subclass.
+        this.guiService = new GuiService(this);
 
         PluginManager pm = server.getPluginManager();
         boolean mvReady = pm.isPluginEnabled("Multiverse-Core");
@@ -158,6 +165,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
         new KitCommand(kitService, server).register(getLifecycleManager());
         new ArenaCommand(arenaManager, server, gameScheduler).register(getLifecycleManager());
         new TestAsyncCommand(gameScheduler).register(getLifecycleManager());
+        new TestGuiCommand(gameScheduler, guiService).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");
         if (faweReady) {
