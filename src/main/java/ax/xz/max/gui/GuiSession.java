@@ -6,31 +6,33 @@ import ax.xz.max.async.Promise;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.Inventory;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 /**
- * Abstract base class for a chest-inventory GUI bound to one player for one
- * open cycle.
+ * Abstract base for a chest-inventory GUI bound to one player for one open
+ * cycle.
  *
- * <p>One instance represents one session: construct it, optionally configure
- * tiles, call {@link #open()}, the player interacts, the session ends when
- * either the player closes the inventory or {@link #close()} is called.
- * After close, the instance is terminal; a new session means a new instance.
- *
- * <p>The framework enforces "GUI invariants" by cancelling every click /
- * drag / hand-swap event in this inventory, so subclasses cannot accidentally
- * leak items in or out. Interaction happens entirely through
- * {@link GuiTile#onClick}.
+ * <p>The base class is intentionally policy-free. It manages the session
+ * lifecycle (open --> events --> close), owns the inventory, and exposes the
+ * inventory events Bukkit fires during the session via three protected
+ * hooks. Subclasses decide what those events mean: whether to cancel them,
+ * whether to allow item movement, whether to translate clicks into
+ * higher-level concepts. {@link ax.xz.max.gui.simple.SimpleGuiSession} is
+ * one such opinionated subclass (default-deny clicks, tile-based dispatch);
+ * other subclasses can implement sortable layouts, paintbrush behaviors,
+ * editable inputs, or whatever else.
  *
  * <p>The base constructor never calls a subclass-overridable method, so
- * subclasses can populate tiles via {@link #set} immediately after
- * {@code super(...)} returns without uninitialised-this hazards.
+ * subclasses can initialize their own fields and touch the inventory via
+ * {@link #inventory()} immediately after {@code super(...)} without
+ * uninitialised-this hazards.
  */
 public abstract class GuiSession {
 
@@ -39,12 +41,11 @@ public abstract class GuiSession {
     private final GuiService guiService;
 
     private final Inventory inventory;
-    private final Map<Integer, GuiTile> tiles = new HashMap<>();
     private final List<Runnable> closeCallbacks = new ArrayList<>();
 
     private boolean opened = false;
     private boolean closed = false;
-    private boolean closingExplicitly = false;
+    private boolean forceClose = false;
 
     protected GuiSession(Player viewer, GameScheduler scheduler, GuiService guiService,
                          Component title, int rows) {
@@ -58,85 +59,69 @@ public abstract class GuiSession {
         this.inventory = Bukkit.createInventory(null, rows * 9, title);
     }
 
-    // ---- subclass-overridable lifecycle hooks (never called from constructor) ----
+    // ---- inventory access (subclasses mutate items here) ----
 
-    /** Runs once after the inventory is shown to the viewer. Default no-op. */
+    /**
+     * The underlying inventory. Subclasses use this to set / read items
+     * directly; the framework imposes no structure on slot contents.
+     */
+    protected final Inventory inventory() { return inventory; }
+
+    // ---- event hooks (default no-op; subclasses override) ----
+
+    /**
+     * Called for every click in the GUI inventory or in the player's
+     * inventory while this session is the top inventory. The Bukkit event
+     * is NOT canceled by the framework; subclasses must call
+     * {@code event.setCanceled(true)} if they want to block the click.
+     */
+    protected void onClick(InventoryClickEvent event) {}
+
+    /**
+     * Called for every drag that touches the GUI inventory. Not canceled
+     * by the framework; subclasses are responsible.
+     */
+    protected void onDrag(InventoryDragEvent event) {}
+
+    /**
+     * Called when the viewer presses the swap-hands key (F by default)
+     * while this session is open. Default no-op so the swap proceeds
+     * normally; override and cancel to block.
+     */
+    protected void onSwap(PlayerSwapHandItemsEvent event) {}
+
+    // ---- lifecycle hooks (subclasses override) ----
+
+    /** Runs once after the inventory is shown to the viewer. */
     protected void onOpen() {}
 
-    /** Runs once on close, before close callbacks fire. Default no-op. */
+    /** Runs once on close, before close callbacks fire. */
     protected void onClose() {}
 
     /**
      * Returns false to prevent the player from closing the GUI themselves
-     * (E key, mouse click outside the menu). The framework re-opens the
-     * inventory on the next tick when this returns false. Has no effect on
-     * explicit {@link #close()} calls from plugin code; those always go
-     * through. Default true.
+     * (E key, mouse outside, etc.). The framework re-opens the inventory
+     * on the next tick when this returns false. Has no effect on explicit
+     * {@link #forceClose()} calls; those always go through. Default true.
      */
     protected boolean playerCanClose() { return true; }
-
-    // ---- tile mutation (safe to call from any main-thread context) ----
-
-    /**
-     * Place a tile at {@code slot}. Updates the tile map and immediately
-     * paints the tile's current icon into the live inventory.
-     */
-    public final void set(int slot, GuiTile tile) {
-        Objects.requireNonNull(tile, "tile");
-        checkSlot(slot);
-        tiles.put(slot, tile);
-        inventory.setItem(slot, tile.icon());
-    }
-
-    /** Remove the tile at {@code slot}, leaving the inventory slot empty. */
-    public final void clear(int slot) {
-        checkSlot(slot);
-        tiles.remove(slot);
-        inventory.setItem(slot, null);
-    }
-
-    /**
-     * Re-paint every slot from its current {@link GuiTile#icon()}. Useful
-     * when tile state has changed and the icon needs to update without
-     * replacing the tile itself.
-     */
-    public final void refresh() {
-        for (Map.Entry<Integer, GuiTile> e : tiles.entrySet()) {
-            inventory.setItem(e.getKey(), e.getValue().icon());
-        }
-    }
-
-    private void checkSlot(int slot) {
-        if (slot < 0 || slot >= inventory.getSize()) {
-            throw new IndexOutOfBoundsException(
-                    "slot " + slot + " out of range [0, " + inventory.getSize() + ").");
-        }
-    }
 
     // ---- session lifecycle ----
 
     /** The player this session is bound to. */
     public final Player viewer() { return viewer; }
 
-    /** True once the session has closed (player-initiated or {@link #close()}). */
+    /** True once the session has closed. */
     public final boolean isClosed() { return closed; }
 
     /**
-     * Show the inventory to the bound viewer. May only be called once per
-     * instance.
-     * todo: unsure whether or not to require that they be open during constructor
-     * feels unnecessary to have to handle the potential state of not being open,
-     * could lead to a bunch of avoidable logic errors
+     * Show the inventory to the bound viewer.
      *
      * @throws IllegalStateException if already opened or closed
      */
     public final void open() {
-        if (closed) {
-            throw new IllegalStateException("GuiSession is already closed.");
-        }
-        if (opened) {
-            throw new IllegalStateException("GuiSession is already open.");
-        }
+        if (closed) throw new IllegalStateException("GuiSession is already closed.");
+        if (opened) throw new IllegalStateException("GuiSession is already open.");
         opened = true;
         guiService.register(inventory, this);
         viewer.openInventory(inventory);
@@ -147,34 +132,26 @@ public abstract class GuiSession {
      * Force-close the inventory; bypasses {@link #playerCanClose()}.
      * Idempotent: a no-op once closed.
      */
-    public final void close() {
+    public final void forceClose() {
         if (closed || !opened) return;
-        closingExplicitly = true;
-        viewer.closeInventory();   // fires InventoryCloseEvent → handleClose()
+        forceClose = true;
+        viewer.closeInventory();   // fires InventoryCloseEvent --> handleClose()
     }
 
-    // ---- close-event subscription (no public Runnable registry) ----
+    // ---- close subscription ----
 
     /**
      * GameExecutor that schedules each submitted task to run on the main
      * thread the moment this session closes. If already closed, the task
      * is scheduled for the next main-thread tick.
-     *
-     * <p>This is the public way to react to close. It composes with the
-     * Promise API; for a {@code Promise<Void>} that completes on close,
-     * see {@link #whenClosedPromise()}.
      */
     public final GameExecutor whenClosedExecutor() {
         return this::registerCloseCallback;
     }
 
     /**
-     * Convenience: a {@code Promise<Void>} that completes the moment this
-     * session closes. Equivalent to
-     * {@code Promise.runAsync(() -> {}, whenClosedExecutor())}.
-     *
-     * <p>Named {@code whenClosedPromise} (not {@code closed}) so it cannot
-     * be confused with the {@link #isClosed()} state predicate.
+     * A {@code Promise<Void>} that completes when this session closes.
+     * Named to avoid confusion with the {@link #isClosed()} state predicate.
      */
     public final Promise<Void> whenClosedPromise() {
         return Promise.runAsync(() -> {}, whenClosedExecutor());
@@ -191,36 +168,42 @@ public abstract class GuiSession {
 
     // ---- package-private hooks driven by GuiService ----
 
-    /**
-     * Routes a click event to the tile at {@code slot}. The Bukkit event
-     * has already been cancelled by the listener; this method's job is
-     * dispatch only.
-     */
-    void handleClick(int slot, org.bukkit.event.inventory.ClickType clickType, Player who) {
+    /** Routes a click event to the subclass hook. Called only by {@link GuiService}. */
+    void dispatchClick(InventoryClickEvent event) {
         if (closed) return;
-        GuiTile tile = tiles.get(slot);
-        if (tile == null) return;
-        tile.onClick(new ClickContext(who, this, slot, clickType));
+        onClick(event);
+    }
+
+    /** Routes a drag event to the subclass hook. */
+    void dispatchDrag(InventoryDragEvent event) {
+        if (closed) return;
+        onDrag(event);
+    }
+
+    /** Routes a hand-swap event to the subclass hook. */
+    void dispatchSwap(PlayerSwapHandItemsEvent event) {
+        if (closed) return;
+        onSwap(event);
     }
 
     /**
-     * Called by the listener on {@link org.bukkit.event.inventory.InventoryCloseEvent}.
-     * Decides whether to honour the close (run the close-flow) or veto it
-     * by re-opening the inventory on the next tick.
+     * Internal method called by the listener on {@code InventoryCloseEvent}.
+     * Honors the {@link #playerCanClose()} veto by re-opening on the next tick.
      */
     void handleClose() {
         if (closed) return;
-        if (!closingExplicitly && !playerCanClose()) {
-            // Veto: re-open on next tick. Cannot reopen synchronously inside
-            // the close event handler.
-            scheduler.mainExecutor().execute(() -> {
-                if (!closed && viewer.isOnline()) {
-                    viewer.openInventory(inventory);
-                }
-            });
+        if (forceClose || playerCanClose()) {
+            // allow the close, clean up
+            finishClose();
             return;
         }
-        finishClose();
+
+        // otherwise, reopen on next tick
+        scheduler.mainExecutor().execute(() -> {
+            if (!closed && viewer.isOnline()) {
+                viewer.openInventory(inventory);
+            }
+        });
     }
 
     private void finishClose() {
@@ -228,14 +211,13 @@ public abstract class GuiSession {
         try {
             onClose();
         } catch (RuntimeException ex) {
-            // Don't let an onClose throw bypass callback cleanup.
-            ex.printStackTrace();
+            guiService.logger.error("Exception during GuiSession onClose", ex);
         }
         for (Runnable cb : closeCallbacks) {
             try {
                 cb.run();
             } catch (RuntimeException ex) {
-                ex.printStackTrace();
+                guiService.logger.error("Exception during GuiSession close callback", ex);
             }
         }
         closeCallbacks.clear();

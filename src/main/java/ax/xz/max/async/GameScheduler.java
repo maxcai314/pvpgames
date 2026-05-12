@@ -1,6 +1,7 @@
 package ax.xz.max.async;
 
 import org.bukkit.plugin.Plugin;
+import org.slf4j.Logger;
 
 /**
  * A helper for creating {@link GameExecutor} executors from a Bukkit plugin.
@@ -8,6 +9,7 @@ import org.bukkit.plugin.Plugin;
  * as well as an async executor, which runs commands on a background thread.
  */
 public class GameScheduler {
+//    private final Logger logger; // todo
     private final Plugin plugin;
 
     public GameScheduler(Plugin plugin) {

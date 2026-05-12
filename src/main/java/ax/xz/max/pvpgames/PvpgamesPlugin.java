@@ -3,6 +3,7 @@ package ax.xz.max.pvpgames;
 import ax.xz.max.async.GameScheduler;
 import ax.xz.max.gui.GuiService;
 import ax.xz.max.gui.test.TestGuiCommand;
+import ax.xz.max.gui.test.paint.TestPaintGuiCommand;
 import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
@@ -166,6 +167,7 @@ public final class PvpgamesPlugin extends JavaPlugin {
         new ArenaCommand(arenaManager, server, gameScheduler).register(getLifecycleManager());
         new TestAsyncCommand(gameScheduler).register(getLifecycleManager());
         new TestGuiCommand(gameScheduler, guiService).register(getLifecycleManager());
+        new TestPaintGuiCommand(gameScheduler, guiService).register(getLifecycleManager());
 
         getSLF4JLogger().info("Checking for other plugins...");
         if (faweReady) {

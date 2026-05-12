@@ -1,10 +1,10 @@
 package ax.xz.max.gui.test;
 
 import ax.xz.max.async.GameScheduler;
-import ax.xz.max.gui.ClickContext;
 import ax.xz.max.gui.GuiService;
-import ax.xz.max.gui.GuiSession;
-import ax.xz.max.gui.GuiTile;
+import ax.xz.max.gui.simple.ClickContext;
+import ax.xz.max.gui.simple.GuiTile;
+import ax.xz.max.gui.simple.SimpleGuiSession;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Material;
@@ -25,12 +25,12 @@ import org.bukkit.inventory.meta.ItemMeta;
  *
  * <p>{@link #playerCanClose()} returns false: the player cannot press E to
  * exit. The only way out is a right-click on the red wool, whose tile calls
- * {@link #close()} to bypass the veto.
+ * {@link #forceClose()} to bypass the veto.
  *
  * <p>Public accessors {@link #count()} and {@link #currentIngot()} let the
  * launcher command read the final state from the close-promise lambda.
  */
-final class TestGuiSession extends GuiSession {
+final class TestGuiSession extends SimpleGuiSession {
 
     private static final Material[] INGOT_CYCLE = {
             Material.IRON_INGOT,
@@ -96,7 +96,7 @@ final class TestGuiSession extends GuiSession {
             }
             @Override public void onClick(ClickContext ctx) {
                 if (ctx.clickType() == ClickType.RIGHT) {
-                    close();
+                    forceClose();
                 }
             }
         });

@@ -1,6 +1,5 @@
 package ax.xz.max.gui;
 
-import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -9,6 +8,7 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.plugin.Plugin;
+import org.slf4j.Logger;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -16,20 +16,18 @@ import java.util.Objects;
 
 /**
  * Single global Bukkit listener that routes inventory events to the
- * matching {@link GuiSession}. One instance is constructed during plugin
- * enable; every {@link GuiSession} receives it via constructor injection.
+ * {@link GuiSession} they affect. Pure routing: this class does NOT cancel
+ * events, enforce invariants, or otherwise interpret what events mean.
+ * Each session's hook ({@link GuiSession#onClick}, {@link GuiSession#onDrag},
+ * {@link GuiSession#onSwap}) decides for itself whether to cancel or allow.
  *
- * <p>The service owns the {@code Map<Inventory, GuiSession>} that backs
- * routing. Sessions register themselves on {@link GuiSession#open()} and
- * unregister on close.
- *
- * <p>This is also where the "no item glitches" invariant is enforced. The
- * listener cancels every click, drag, and hand-swap that happens while a
- * session is open, regardless of whether the click landed in the GUI's top
- * inventory or in the player's bottom inventory; otherwise shift-clicking
- * from the player inventory could leak items into the GUI.
+ * <p>Sessions register themselves on {@link GuiSession#open()} via the
+ * package-private {@link #register} / {@link #unregister} pair. Routing is
+ * keyed on the top inventory of the open view.
  */
 public final class GuiService implements Listener {
+
+    final Logger logger;
 
     // todo: make sure this does not memory leak
     private final Map<Inventory, GuiSession> openSessions = new HashMap<>();
@@ -37,6 +35,7 @@ public final class GuiService implements Listener {
     public GuiService(Plugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
+        this.logger = plugin.getSLF4JLogger();
     }
 
     void register(Inventory inventory, GuiSession session) {
@@ -49,41 +48,21 @@ public final class GuiService implements Listener {
 
     @EventHandler
     public void onClick(InventoryClickEvent event) {
-        Inventory top = event.getView().getTopInventory();
-        GuiSession session = openSessions.get(top);
-        if (session == null) return;
-
-        // Cancel every click while a session is open. This blocks
-        // shift-clicks, hotbar swaps, double-click collect, etc. from
-        // moving items between the player inventory and the GUI inventory.
-        event.setCancelled(true);
-
-        int rawSlot = event.getRawSlot();
-        if (rawSlot >= 0 && rawSlot < top.getSize()) {
-            // Click landed in the GUI inventory; dispatch to the tile.
-            session.handleClick(rawSlot, event.getClick(), (Player) event.getWhoClicked());
-        }
-        // Clicks in the player's bottom inventory are still cancelled, but
-        // there is no tile dispatch for them.
+        GuiSession session = openSessions.get(event.getView().getTopInventory());
+        if (session != null) session.dispatchClick(event);
     }
 
     @EventHandler
     public void onDrag(InventoryDragEvent event) {
-        Inventory top = event.getView().getTopInventory();
-        if (openSessions.containsKey(top)) {
-            event.setCancelled(true);
-        }
+        GuiSession session = openSessions.get(event.getView().getTopInventory());
+        if (session != null) session.dispatchDrag(event);
     }
 
     @EventHandler
     public void onSwap(PlayerSwapHandItemsEvent event) {
-        // F-key swap fires independently of InventoryClickEvent. Cancel it
-        // while a GUI is open so the player cannot rearrange items they
-        // can see in the bottom rows of the open GUI.
         Inventory top = event.getPlayer().getOpenInventory().getTopInventory();
-        if (openSessions.containsKey(top)) {
-            event.setCancelled(true);
-        }
+        GuiSession session = openSessions.get(top);
+        if (session != null) session.dispatchSwap(event);
     }
 
     @EventHandler
@@ -92,5 +71,7 @@ public final class GuiService implements Listener {
         if (session != null) {
             session.handleClose();
         }
+        // todo: what if the player disconnects?
+        // player death?
     }
 }

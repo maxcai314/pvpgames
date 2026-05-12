@@ -1,4 +1,4 @@
-package ax.xz.max.gui;
+package ax.xz.max.gui.simple;
 
 import org.bukkit.inventory.ItemStack;
 
@@ -15,7 +15,7 @@ import java.util.function.Consumer;
  * <p>The default {@link #onClick(ClickContext)} is a no-op, so a tile that
  * is only meant as decoration (e.g. a glass-pane filler) does not need to
  * override anything but {@link #icon()}. Click events on every tile are
- * unconditionally cancelled by the framework regardless of what the
+ * unconditionally canceled by the framework regardless of what the
  * subclass does, so tiles never leak items in or out of the inventory.
  */
 public abstract class GuiTile {
