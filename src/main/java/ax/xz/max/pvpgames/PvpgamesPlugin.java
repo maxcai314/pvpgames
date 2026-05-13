@@ -25,11 +25,7 @@ import ax.xz.max.async.test.TestAsyncCommand;
 import ax.xz.max.pvpgames.world.WorldService;
 import ax.xz.max.pvpgames.world.WorldServiceException;
 import ax.xz.max.pvpgames.world.internal.BukkitWorldService;
-import ax.xz.max.pvpgames.worldguard.BukkitWorldGuardService;
-import ax.xz.max.pvpgames.worldguard.UnavailableWorldGuardService;
-import ax.xz.max.pvpgames.worldguard.WorldGuardService;
 import org.bukkit.Server;
-import org.bukkit.World;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -47,15 +43,16 @@ import java.util.Objects;
  * <p>This is the only place we touch {@link Server} and other Bukkit
  * statics; everything else receives its dependencies through constructors.
  *
- * <p>Soft dependencies (WorldEdit, WorldGuard) are detected at enable;
- * missing ones cause the corresponding service to be wired with its
- * {@code Unavailable*} stub instead of the real implementation. If either
- * is missing, the arena manager is replaced with
+ * <p>Soft dependencies (WorldEdit, WorldGuard) are detected at enable.
+ * If either is missing, the arena manager is replaced with
  * {@link UnavailableArenaManager} and the shared arenas world is not
  * created because no session can be opened anyway. The arenas world
  * itself is built directly through {@link WorldService}, which uses
  * Bukkit's own {@code WorldCreator}; no third-party world-management
- * plugin is required.
+ * plugin is required. WorldGuard wiring is owned by
+ * {@code DefaultArenaManager}, which constructs and tears down a
+ * world-scoped {@code WorldGuardService} alongside the arenas world; the
+ * plugin entry point does not touch it directly.
  */
 public final class PvpgamesPlugin extends JavaPlugin {
 
@@ -64,15 +61,12 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     private WorldService worldService;
     private SchematicService schematicService;
-    private WorldGuardService worldGuardService;
 
     private KitRepository kitRepository;
     private KitService kitService;
 
     private ArenaRepository arenaRepository;
     private ArenaManager arenaManager;
-    private World arenaWorld;
-    private boolean ownsArenaWorld;
 
     @Override
     public void onEnable() {
@@ -98,10 +92,6 @@ public final class PvpgamesPlugin extends JavaPlugin {
         this.schematicService = faweReady
                 ? new WorldEditSchematicService(schematicsDir, gameScheduler, getSLF4JLogger())
                 : new UnavailableSchematicService();
-
-        this.worldGuardService = wgReady
-                ? new BukkitWorldGuardService(getSLF4JLogger())
-                : new UnavailableWorldGuardService();
 
         Path kitsDir = getDataFolder().toPath().resolve("kits");
         try {
@@ -130,7 +120,9 @@ public final class PvpgamesPlugin extends JavaPlugin {
         // todo: ugly pattern. use Optional instead
         if (missingDeps == null) {
             try {
-                this.arenaManager = createArenaManager();
+                this.arenaManager = new DefaultArenaManager(
+                        this.arenaRepository, this.schematicService, this.worldService,
+                        this, this.gameScheduler, Clock.systemUTC(), getSLF4JLogger());
             } catch (WorldServiceException ex) {
                 getSLF4JLogger().error("Failed to create shared arenas world; disabling plugin.", ex);
                 server.getPluginManager().disablePlugin(this);
@@ -166,20 +158,8 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // restore player state before deleting worlds
         if (arenaManager != null) {
             arenaManager.shutdown();
-        }
-
-        // delete world
-        if (ownsArenaWorld && arenaWorld != null && worldService != null && worldGuardService != null) {
-            try {
-                getSLF4JLogger().info("Deleting world {}", ArenaName.SHARED_WORLD_NAME);
-                worldGuardService.shutdown();
-                worldService.deleteWorld(arenaWorld);
-            } catch (WorldServiceException ex) {
-                getSLF4JLogger().warn("Failed to delete shared arenas world on disable: {}", ex.getMessage());
-            }
         }
     }
 
@@ -193,18 +173,6 @@ public final class PvpgamesPlugin extends JavaPlugin {
         if (!wgReady) missing.add("WorldGuard");
         if (missing.isEmpty()) return null;
         return "Dependencies [" + String.join(", ", missing) + "] are not installed.";
-    }
-
-    /** assumes that many dependencies are initialized */
-    private ArenaManager createArenaManager() throws WorldServiceException {
-        this.arenaWorld = this.worldService.createVoidWorld(ArenaName.SHARED_WORLD_NAME);
-        this.ownsArenaWorld = true;
-        ArenaAllocator allocator = new ArenaAllocator(this.arenaWorld);
-        PlayerStateCache stateCache = new PlayerStateCache(this.getServer(), this);
-        return new DefaultArenaManager(
-                this.arenaRepository, this.schematicService, this.worldGuardService,
-                allocator, stateCache, this.arenaWorld,
-                this, this.gameScheduler, Clock.systemUTC(), getSLF4JLogger());
     }
 
     public KitService kitService() {
@@ -221,9 +189,5 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     public SchematicService schematicService() {
         return schematicService;
-    }
-
-    public WorldGuardService worldGuardService() {
-        return worldGuardService;
     }
 }

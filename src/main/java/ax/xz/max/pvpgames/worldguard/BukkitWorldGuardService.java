@@ -24,54 +24,50 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * {@link WorldGuardService} backed by WorldGuard 7.0.x.
+ * {@link WorldGuardService} backed by WorldGuard 7.0.x, bound to a
+ * single {@link World} at construction.
  *
  * <p>This is the only file in the plugin that imports
- * {@code com.sk89q.worldguard.*}; everything else interacts with WG through
- * the {@link WorldGuardService} interface and the
+ * {@code com.sk89q.worldguard.*}; everything else interacts with WG
+ * through the {@link WorldGuardService} interface and the
  * {@link ProtectedArenaRegion} record.
  *
- * <p>Flags are parsed via WG's own {@link Flag#parseInput(FlagContext)}, which
- * means the value strings accepted in {@code arena.flags()} are exactly what
- * WG accepts on the {@code /rg flag} command (for example {@code allow} /
- * {@code deny} for state flags, {@code true} / {@code false} for boolean
- * flags). All flags are applied to the default group only; per-group overrides
- * are out of scope for this service.
+ * <p>Flags are parsed via WG's own {@link Flag#parseInput(FlagContext)},
+ * which means the value strings accepted in {@code arena.flags()} are
+ * exactly what WG accepts on the {@code /rg flag} command (for example
+ * {@code allow} / {@code deny} for state flags, {@code true} /
+ * {@code false} for boolean flags). All flags are applied to the
+ * default group only; per-group overrides are out of scope for this
+ * service.
  */
 public final class BukkitWorldGuardService implements WorldGuardService {
 
+    private final World world;
     private final Logger logger;
 
     /**
-     * Worlds whose region manager has been mutated by this service.
-     * {@link #shutdown()} forces a save on each so in-memory removals persist
-     * to disk before the world is unloaded; without this WorldGuard's
-     * automatic save during world unload runs after the arenas world has
-     * already been unloaded.
+     * Region ids this service still considers open (created but not
+     * yet removed). {@link #shutdown()} clears any leftovers so the
+     * saved region database does not contain ghost regions.
      */
-    private final Set<World> touchedWorlds = ConcurrentHashMap.newKeySet();
+    private final Set<String> openRegionIds = ConcurrentHashMap.newKeySet();
 
-    /**
-     * Regions this service still considers open (created but not yet
-     * removed). Used by {@link #shutdown()} to clear leftover sessions if
-     * the manager did not close them cleanly.
-     * todo: should probably be handled by the ArenaManager instead
-     */
-    private final Set<RegionRef> openRegions = ConcurrentHashMap.newKeySet();
-
-    public BukkitWorldGuardService(Logger logger) {
+    public BukkitWorldGuardService(World world, Logger logger) {
+        this.world = Objects.requireNonNull(world, "world");
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     @Override
-    public ProtectedArenaRegion createRegion(World world, String regionId, BlockVec3 min, BlockVec3 max)
+    public World world() { return world; }
+
+    @Override
+    public ProtectedArenaRegion createRegion(String regionId, BlockVec3 min, BlockVec3 max)
             throws WorldGuardException {
-        Objects.requireNonNull(world, "world");
         Objects.requireNonNull(regionId, "regionId");
         Objects.requireNonNull(min, "min");
         Objects.requireNonNull(max, "max");
 
-        RegionManager manager = regionManagerFor(world);
+        RegionManager manager = regionManager();
         if (manager.hasRegion(regionId)) {
             throw new WorldGuardException("Region '" + regionId + "' already exists in world '"
                     + world.getName() + "'.");
@@ -81,30 +77,26 @@ public final class BukkitWorldGuardService implements WorldGuardService {
                 BlockVector3.at(min.x(), min.y(), min.z()),
                 BlockVector3.at(max.x(), max.y(), max.z()));
         manager.addRegion(region);
-        touchedWorlds.add(world);
-        openRegions.add(new RegionRef(world, regionId));
+        openRegionIds.add(regionId);
         return new ProtectedArenaRegion(world, regionId, min, max);
     }
 
     @Override
-    public void removeRegion(World world, String regionId) {
-        Objects.requireNonNull(world, "world");
+    public void removeRegion(String regionId) {
         Objects.requireNonNull(regionId, "regionId");
 
         RegionManager manager;
         try {
-            manager = regionManagerFor(world);
+            manager = regionManager();
         } catch (WorldGuardException ex) {
             logger.warn("Failed to look up region manager for world '{}': {}",
                     world.getName(), ex.getMessage());
             return;
         }
-        openRegions.remove(new RegionRef(world, regionId));
-        if (!manager.hasRegion(regionId)) {
-            return;
+        openRegionIds.remove(regionId);
+        if (manager.hasRegion(regionId)) {
+            manager.removeRegion(regionId);
         }
-        manager.removeRegion(regionId);
-        touchedWorlds.add(world);
     }
 
     @Override
@@ -115,7 +107,7 @@ public final class BukkitWorldGuardService implements WorldGuardService {
             return;
         }
 
-        RegionManager manager = regionManagerFor(region.world());
+        RegionManager manager = regionManager();
         ProtectedRegion wgRegion = manager.getRegion(region.regionId());
         if (wgRegion == null) {
             throw new WorldGuardException("Region '" + region.regionId()
@@ -134,8 +126,7 @@ public final class BukkitWorldGuardService implements WorldGuardService {
     }
 
     @Override
-    public boolean contains(World world, String regionId, Location loc) {
-        Objects.requireNonNull(world, "world");
+    public boolean contains(String regionId, Location loc) {
         Objects.requireNonNull(regionId, "regionId");
         Objects.requireNonNull(loc, "loc");
         if (!Objects.equals(loc.getWorld(), world)) {
@@ -143,7 +134,7 @@ public final class BukkitWorldGuardService implements WorldGuardService {
         }
         RegionManager manager;
         try {
-            manager = regionManagerFor(world);
+            manager = regionManager();
         } catch (WorldGuardException ex) {
             return false;
         }
@@ -174,40 +165,35 @@ public final class BukkitWorldGuardService implements WorldGuardService {
 
     @Override
     public void shutdown() {
-        // Drop any sessions the caller did not close cleanly so the saved
-        // region database does not contain ghost regions.
-        Set<RegionRef> leftover = new HashSet<>(openRegions);
-        for (RegionRef ref : leftover) {
+        // Drop any regions the caller did not close cleanly so the
+        // saved region database does not keep ghost regions around.
+        for (String id : new HashSet<>(openRegionIds)) {
             try {
-                RegionManager manager = regionManagerFor(ref.world());
-                if (manager.hasRegion(ref.regionId())) {
-                    manager.removeRegion(ref.regionId());
+                RegionManager manager = regionManager();
+                if (manager.hasRegion(id)) {
+                    manager.removeRegion(id);
                 }
-                touchedWorlds.add(ref.world());
             } catch (WorldGuardException ex) {
                 logger.warn("Failed to remove leftover region '{}' in world '{}' on shutdown: {}",
-                        ref.regionId(), ref.world().getName(), ex.getMessage());
+                        id, world.getName(), ex.getMessage());
             }
         }
-        openRegions.clear();
+        openRegionIds.clear();
 
-        // Force a synchronous save of every region manager we touched.
-        for (World world : touchedWorlds) {
-            try {
-                RegionManager manager = regionManagerFor(world);
-                manager.save();
-            } catch (WorldGuardException ex) {
-                logger.warn("Failed to look up region manager for world '{}' on shutdown: {}",
-                        world.getName(), ex.getMessage());
-            } catch (StorageException ex) {
-                logger.warn("Failed to save WorldGuard regions for world '{}' on shutdown: {}",
-                        world.getName(), ex.getMessage());
-            }
+        // Force a synchronous save so in-memory removals land on disk
+        // before the world is unloaded.
+        try {
+            regionManager().save();
+        } catch (WorldGuardException ex) {
+            logger.warn("Failed to look up region manager for world '{}' on shutdown: {}",
+                    world.getName(), ex.getMessage());
+        } catch (StorageException ex) {
+            logger.warn("Failed to save WorldGuard regions for world '{}' on shutdown: {}",
+                    world.getName(), ex.getMessage());
         }
-        touchedWorlds.clear();
     }
 
-    private RegionManager regionManagerFor(World world) throws WorldGuardException {
+    private RegionManager regionManager() throws WorldGuardException {
         WorldGuard wg = WorldGuard.getInstance(); // todo: singleton access pattern should be dependency-injected into object constructor
         if (wg == null) {
             throw new WorldGuardException("WorldGuard is not yet loaded.");
@@ -223,7 +209,4 @@ public final class BukkitWorldGuardService implements WorldGuardService {
         }
         return manager;
     }
-
-    /** A (world, regionId) pair tracked so shutdown can clean up reliably. */
-    private record RegionRef(World world, String regionId) {}
 }

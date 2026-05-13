@@ -15,6 +15,9 @@ import ax.xz.max.pvpgames.arena.ArenaSession;
 import ax.xz.max.pvpgames.schematic.SchematicError;
 import ax.xz.max.pvpgames.schematic.SchematicName;
 import ax.xz.max.pvpgames.schematic.SchematicService;
+import ax.xz.max.pvpgames.world.WorldService;
+import ax.xz.max.pvpgames.world.WorldServiceException;
+import ax.xz.max.pvpgames.worldguard.BukkitWorldGuardService;
 import ax.xz.max.pvpgames.worldguard.ProtectedArenaRegion;
 import ax.xz.max.pvpgames.worldguard.WorldGuardException;
 import ax.xz.max.pvpgames.worldguard.WorldGuardService;
@@ -66,6 +69,7 @@ public final class DefaultArenaManager implements ArenaManager {
 
     private final ArenaRepository repository;
     private final SchematicService schematicService;
+    private final WorldService worldService;
     private final WorldGuardService worldGuardService;
     private final ArenaAllocator allocator;
     private final PlayerStateCache playerStateCache;
@@ -82,20 +86,34 @@ public final class DefaultArenaManager implements ArenaManager {
     public DefaultArenaManager(
             ArenaRepository repository,
             SchematicService schematicService,
-            WorldGuardService worldGuardService,
-            ArenaAllocator allocator,
-            PlayerStateCache playerStateCache,
-            World arenaWorld,
+            WorldService worldService,
             Plugin plugin,
             GameScheduler scheduler,
             Clock clock,
-            Logger logger) {
+            Logger logger) throws WorldServiceException {
+        World arenaWorld = worldService.createVoidWorld(ArenaName.SHARED_WORLD_NAME);
+        WorldGuardService worldGuardService;
+        try {
+            worldGuardService = new BukkitWorldGuardService(arenaWorld, logger);
+        } catch (RuntimeException ex) {
+            try {
+                worldService.deleteWorld(arenaWorld);
+            } catch (WorldServiceException cleanup) {
+                logger.warn("Failed to clean up arenas world after WG service construction failed: {}",
+                        cleanup.getMessage());
+            }
+            throw ex;
+        }
+        ArenaAllocator allocator = new ArenaAllocator(arenaWorld);
+        PlayerStateCache playerStateCache = new PlayerStateCache(plugin.getServer(), plugin);
+
         this.repository = Objects.requireNonNull(repository, "repository");
         this.schematicService = Objects.requireNonNull(schematicService, "schematicService");
-        this.worldGuardService = Objects.requireNonNull(worldGuardService, "worldGuardService");
-        this.allocator = Objects.requireNonNull(allocator, "allocator");
-        this.playerStateCache = Objects.requireNonNull(playerStateCache, "playerStateCache");
-        this.arenaWorld = Objects.requireNonNull(arenaWorld, "arenaWorld");
+        this.worldService = Objects.requireNonNull(worldService, "worldService");
+        this.worldGuardService = worldGuardService;
+        this.allocator = allocator;
+        this.playerStateCache = playerStateCache;
+        this.arenaWorld = arenaWorld;
         this.server = plugin.getServer();
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -189,8 +207,8 @@ public final class DefaultArenaManager implements ArenaManager {
         GameExecutor main = scheduler.mainExecutor();
 
         // prelude (main) -> paste (async, run by SchematicService) -> finalize (main).
-        return (Promise<Result<ArenaSession, String>>) Promise.supplyAsync(() -> prepareOpen(rawArenaName), main)
-                .thenComposeAsync(prelude -> switch (prelude) {
+        return Promise.supplyAsync(() -> prepareOpen(rawArenaName), main)
+                .<Result<ArenaSession, String>>thenComposeAsync(prelude -> switch (prelude) {
                     case Result.Err<Prelude, String>(String err) ->
                             Promise.<Result<ArenaSession, String>>completedFuture(new Result.Err<>(err));
                     case Result.Ok<Prelude, String>(Prelude p) ->
@@ -259,7 +277,7 @@ public final class DefaultArenaManager implements ArenaManager {
 
         ProtectedArenaRegion region;
         try {
-            region = worldGuardService.createRegion(arenaWorld, regionId, allocation.min(), allocation.max());
+            region = worldGuardService.createRegion(regionId, allocation.min(), allocation.max());
         } catch (WorldGuardException ex) {
             allocator.release(p.allocation().slotIndex());
             return new Result.Err<>("Could not register WorldGuard region: " + ex.getMessage());
@@ -271,7 +289,7 @@ public final class DefaultArenaManager implements ArenaManager {
         try {
             worldGuardService.applyFlags(region, wgFlags);
         } catch (WorldGuardException ex) {
-            worldGuardService.removeRegion(arenaWorld, regionId);
+            worldGuardService.removeRegion(regionId);
             allocator.release(p.allocation().slotIndex());
             String flagName = extractFlagName(ex.getMessage(), wgFlags);
             return new Result.Err<>("Could not apply flag '" + flagName + "': " + ex.getMessage());
@@ -297,7 +315,7 @@ public final class DefaultArenaManager implements ArenaManager {
         if (session == null) {
             return false;
         }
-        worldGuardService.removeRegion(arenaWorld, session.region().regionId());
+        worldGuardService.removeRegion(session.region().regionId());
         allocator.release(session.slotIndex());
         logger.info("Closed arena session {} ('{}').", sessionId, session.arenaName().value());
         return true;
@@ -333,6 +351,7 @@ public final class DefaultArenaManager implements ArenaManager {
 
     @Override
     public void shutdown() {
+        logger.info("Shutting down DefaultArenaManager");
         // Restore every cached player; do this before closing sessions so the
         // restoration teleport happens out of the arena world cleanly.
         for (UUID playerId : playerStateCache.cachedPlayers()) {
@@ -353,11 +372,15 @@ public final class DefaultArenaManager implements ArenaManager {
         for (long id : ids) {
             closeSession(id);
         }
-        // Force WorldGuard to flush region removals to disk before the
-        // arena world is deleted; otherwise the region database files
-        // outlive the world directory and ghost regions appear on the
-        // next plugin enable.
+
+        // close worldGuardService before deleting world
         worldGuardService.shutdown();
+        try {
+            worldService.deleteWorld(arenaWorld);
+        } catch (WorldServiceException ex) {
+            logger.warn("Failed to delete shared arenas world on shutdown: {}", ex.getMessage());
+        }
+        logger.info("Successfully shut down DefaultArenaManager");
     }
 
     /**
