@@ -1,20 +1,26 @@
 package ax.xz.max.pvpgames.worldguard;
 
 import ax.xz.max.pvpgames.schematic.BlockVec3;
-import org.bukkit.Location;
 import org.bukkit.World;
-
-import java.util.Map;
 
 /**
  * Abstraction over the WorldGuard plugin scoped to a single {@link World}.
- * Each instance is bound to one world at construction and operates only on
- * that world; callers do not pass a world through every call. Lets the
- * arena subsystem create cuboid regions and apply behavior flags without
- * importing the WorldGuard API directly.
+ * Each instance is bound to one world at construction and operates only
+ * on that world; callers do not pass a world through every call.
  *
- * <p>Lifetime: an instance lives as long as the world it is bound to and
- * must be {@link #shutdown() shut down} before that world is unloaded.
+ * <p>The service is a region factory: callers ask for a
+ * {@link ProtectedArenaRegion} by cuboid bounds, get back an opaque
+ * handle, and operate on it through the handle's own API
+ * ({@link ProtectedArenaRegion#contains},
+ * {@link ProtectedArenaRegion#applyFlags}). The WorldGuard region ID
+ * format, the number of underlying regions per handle, and any other
+ * details of how protection is realized are owned by the
+ * implementation.
+ *
+ * <p>Lifetime: an instance lives as long as the world it is bound to
+ * and must be {@link #shutdown() shut down} before that world is
+ * unloaded. Typically constructed and destroyed by the class that
+ * owns the world (today, {@code DefaultArenaManager}).
  */
 public interface WorldGuardService {
 
@@ -22,62 +28,28 @@ public interface WorldGuardService {
     World world();
 
     /**
-     * Creates a cuboid region with id {@code regionId} bounded by the
-     * given inclusive corners in {@link #world()} and registers it with
-     * WorldGuard's region manager.
+     * Creates a protected region bounded by the given inclusive corners
+     * in {@link #world()}. The returned handle is opaque; callers
+     * cannot tell how many underlying WorldGuard regions back it.
      *
-     * @param regionId a unique id within this world; conventionally
-     *                 {@code "pvpgames_arena_<sessionId>"}
-     * @param min      inclusive minimum corner
-     * @param max      inclusive maximum corner
-     * @return a handle that can be passed to {@link #applyFlags}
      * @throws WorldGuardException if the region manager is not loaded
-     *         for {@link #world()} or a region with the same id already
-     *         exists
+     *         for {@link #world()} or the underlying WG region could
+     *         not be registered
      */
-    ProtectedArenaRegion createRegion(String regionId, BlockVec3 min, BlockVec3 max)
-            throws WorldGuardException;
+    ProtectedArenaRegion createRegion(BlockVec3 min, BlockVec3 max) throws WorldGuardException;
 
     /**
-     * Removes the named region from {@link #world()}'s region manager.
-     * Idempotent; removing a region that does not exist is a no-op.
+     * Removes {@code region} from {@link #world()}. Idempotent: removing
+     * an already-removed handle is a no-op. Handles created by a
+     * different service instance are ignored.
      */
-    void removeRegion(String regionId);
-
-    /**
-     * Applies textual flag values to {@code region}. Each entry's flag
-     * name is looked up in WorldGuard's flag registry; the raw string
-     * value is parsed by the flag's own {@code parseInput}, so the
-     * format is whatever WG accepts (e.g. {@code "allow"}/{@code "deny"}
-     * for state flags, {@code "true"}/{@code "false"} for boolean
-     * flags, integers for integer flags).
-     *
-     * <p>Flags are applied to the default group only; group-targeted
-     * flag overrides are out of scope for this service.
-     *
-     * @throws WorldGuardException if the flag name is unknown to the
-     *         registry or a value fails to parse
-     */
-    void applyFlags(ProtectedArenaRegion region, Map<String, String> flags) throws WorldGuardException;
-
-    /**
-     * Returns {@code true} if {@code loc} lies inside the named region
-     * in {@link #world()}. Returns {@code false} when the location is
-     * in a different world, the world has no region manager, or the
-     * region does not exist.
-     */
-    boolean contains(String regionId, Location loc);
+    void removeRegion(ProtectedArenaRegion region);
 
     /**
      * Removes any region this service still has open and forces a save
      * of its region manager, so a future plugin enable does not see
      * stale regions persisted by WorldGuard's per-world database. Must
      * run before {@link #world()} is unloaded.
-     *
-     * <p>{@link #removeRegion} only changes in-memory state;
-     * WorldGuard's automatic save runs during world unload, which is
-     * too late if the world is about to be deleted. This method makes
-     * the save explicit and synchronous.
      */
     void shutdown();
 }

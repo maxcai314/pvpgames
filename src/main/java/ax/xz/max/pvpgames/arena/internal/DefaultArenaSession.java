@@ -12,7 +12,6 @@ import ax.xz.max.pvpgames.player.PlayerStateSnapshot;
 import ax.xz.max.pvpgames.schematic.BlockVec3;
 import ax.xz.max.pvpgames.worldguard.ProtectedArenaRegion;
 import ax.xz.max.pvpgames.worldguard.WorldGuardException;
-import ax.xz.max.pvpgames.worldguard.WorldGuardService;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -40,7 +39,6 @@ public final class DefaultArenaSession implements ArenaSession {
     private final ProtectedArenaRegion region;
     private final ArenaRepository repository;
     private final PlayerStateCache playerStateCache;
-    private final WorldGuardService worldGuardService;
 
     private Arena arena;
 
@@ -52,8 +50,7 @@ public final class DefaultArenaSession implements ArenaSession {
             int slotIndex,
             ProtectedArenaRegion region,
             ArenaRepository repository,
-            PlayerStateCache playerStateCache,
-            WorldGuardService worldGuardService) {
+            PlayerStateCache playerStateCache) {
         this.id = id;
         this.arena = Objects.requireNonNull(arena, "arena");
         this.world = Objects.requireNonNull(world, "world");
@@ -62,7 +59,6 @@ public final class DefaultArenaSession implements ArenaSession {
         this.region = Objects.requireNonNull(region, "region");
         this.repository = Objects.requireNonNull(repository, "repository");
         this.playerStateCache = Objects.requireNonNull(playerStateCache, "playerStateCache");
-        this.worldGuardService = Objects.requireNonNull(worldGuardService, "worldGuardService");
     }
 
     @Override
@@ -200,7 +196,7 @@ public final class DefaultArenaSession implements ArenaSession {
         // without reopening the session. Only the one updated flag is sent;
         // other flags on the region keep their current values.
         try {
-            worldGuardService.applyFlags(region, Map.of(name, value ? "allow" : "deny"));
+            region.applyFlags(Map.of(name, value ? "allow" : "deny"));
         } catch (WorldGuardException ex) {
             return new Result.Err<>(
                     "Saved arena, but could not update live WorldGuard region: " + ex.getMessage());

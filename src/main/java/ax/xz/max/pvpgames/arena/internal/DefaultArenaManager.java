@@ -65,8 +65,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class DefaultArenaManager implements ArenaManager {
 
-    private static final String REGION_ID_PREFIX = "pvpgames_arena_";
-
     private final ArenaRepository repository;
     private final SchematicService schematicService;
     private final WorldService worldService;
@@ -263,21 +261,11 @@ public final class DefaultArenaManager implements ArenaManager {
         }
 
         long sessionId = nextSessionId.getAndIncrement();
-        String regionId = REGION_ID_PREFIX + sessionId;
         ArenaAllocator.Allocation allocation = p.allocation();
-
-        // todo: this stuff should all be abstracted somewhere in the worldguard
-        // todo: worldguard package should make an abstraction to handle this
-        // for example, in the future we might want arenas to set up using two
-        // inheriting regions, so that we can surround the arena in a no-build no-pearl zone
-        // to prevent players escaping.
-        // this type of detail should be hidden from this code
-        // and encapsulated in its own class.
-        // https://worldguard.enginehub.org/en/latest/regions/priorities/
 
         ProtectedArenaRegion region;
         try {
-            region = worldGuardService.createRegion(regionId, allocation.min(), allocation.max());
+            region = worldGuardService.createRegion(allocation.min(), allocation.max());
         } catch (WorldGuardException ex) {
             allocator.release(p.allocation().slotIndex());
             return new Result.Err<>("Could not register WorldGuard region: " + ex.getMessage());
@@ -287,9 +275,9 @@ public final class DefaultArenaManager implements ArenaManager {
         Map<String, String> wgFlags = new LinkedHashMap<>(ArenaFlags.BASELINE_WG_FLAGS);
         wgFlags.putAll(p.arena().flags().toWorldGuardFlags());
         try {
-            worldGuardService.applyFlags(region, wgFlags);
+            region.applyFlags(wgFlags);
         } catch (WorldGuardException ex) {
-            worldGuardService.removeRegion(regionId);
+            worldGuardService.removeRegion(region);
             allocator.release(p.allocation().slotIndex());
             String flagName = extractFlagName(ex.getMessage(), wgFlags);
             return new Result.Err<>("Could not apply flag '" + flagName + "': " + ex.getMessage());
@@ -297,7 +285,7 @@ public final class DefaultArenaManager implements ArenaManager {
 
         DefaultArenaSession session = new DefaultArenaSession(
                 sessionId, p.arena(), arenaWorld, p.allocation().origin(), p.allocation().slotIndex(),
-                region, repository, playerStateCache, worldGuardService);
+                region, repository, playerStateCache);
         sessionPool.put(sessionId, session);
 
         logger.info("Opened arena session {} ('{}') at slot {} origin ({}, {}, {}).",
@@ -315,7 +303,7 @@ public final class DefaultArenaManager implements ArenaManager {
         if (session == null) {
             return false;
         }
-        worldGuardService.removeRegion(session.region().regionId());
+        worldGuardService.removeRegion(session.region());
         allocator.release(session.slotIndex());
         logger.info("Closed arena session {} ('{}').", sessionId, session.arenaName().value());
         return true;

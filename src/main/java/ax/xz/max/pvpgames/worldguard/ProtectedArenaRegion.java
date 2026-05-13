@@ -1,36 +1,43 @@
 package ax.xz.max.pvpgames.worldguard;
 
-import ax.xz.max.pvpgames.schematic.BlockVec3;
-import org.bukkit.World;
-
-import java.util.Objects;
+import java.util.Map;
 
 /**
- * Opaque handle to a WorldGuard region created via
- * {@link WorldGuardService#createRegion}.
+ * Opaque handle to a protected region created by
+ * {@link WorldGuardService#createRegion}. Implementations may be backed
+ * by one or several underlying WorldGuard regions; callers do not see
+ * the difference. The only operations exposed are containment tests
+ * and live flag mutation.
  *
- * <p>Only the fields needed by the arena manager are exposed; the underlying
- * {@code ProtectedRegion} is left inside the service implementation so the
- * rest of the plugin does not import {@code com.sk89q.worldguard} types.
- *
- * @param world    the world the region was registered in
- * @param regionId the WorldGuard region id (unique per world)
- * @param min      inclusive minimum corner of the cuboid
- * @param max      inclusive maximum corner of the cuboid
+ * <p>Lifetime: a region is valid from the moment
+ * {@link WorldGuardService#createRegion} returns it until either
+ * {@link WorldGuardService#removeRegion} is called with it or the
+ * owning service is {@linkplain WorldGuardService#shutdown shut down}.
  */
-public record ProtectedArenaRegion(World world, String regionId, BlockVec3 min, BlockVec3 max) {
+public interface ProtectedArenaRegion {
 
-    public ProtectedArenaRegion {
-        Objects.requireNonNull(world, "world");
-        Objects.requireNonNull(regionId, "regionId");
-        Objects.requireNonNull(min, "min");
-        Objects.requireNonNull(max, "max");
-    }
+    /**
+     * True if the integer point {@code (x, y, z)} lies inside this
+     * region's boundary. For multi-region implementations the boundary
+     * is the outermost region (the one a player would have to cross to
+     * leave the protected area).
+     */
+    boolean contains(int x, int y, int z);
 
-    /** True when {@code (x, y, z)} falls inside the cuboid (inclusive). */
-    public boolean contains(int x, int y, int z) {
-        return x >= min.x() && x <= max.x()
-                && y >= min.y() && y <= max.y()
-                && z >= min.z() && z <= max.z();
-    }
+    /**
+     * Apply textual flag values to this region. Each entry's flag name
+     * is looked up in WorldGuard's flag registry; the raw string value
+     * is parsed by the flag's own {@code parseInput}, so the format is
+     * whatever WG accepts (for example {@code "allow"} / {@code "deny"}
+     * for state flags, {@code "true"} / {@code "false"} for boolean
+     * flags, integers for integer flags).
+     *
+     * <p>Flags are applied to the default group only; group-targeted
+     * flag overrides are out of scope.
+     *
+     * @throws WorldGuardException if a flag name is unknown to the
+     *         registry, a value fails to parse, or the underlying
+     *         WorldGuard region has already been removed
+     */
+    void applyFlags(Map<String, String> flags) throws WorldGuardException;
 }

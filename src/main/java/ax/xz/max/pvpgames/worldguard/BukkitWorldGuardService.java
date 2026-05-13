@@ -13,7 +13,6 @@ import com.sk89q.worldguard.protection.managers.storage.StorageException;
 import com.sk89q.worldguard.protection.regions.ProtectedCuboidRegion;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
 import com.sk89q.worldguard.protection.regions.RegionContainer;
-import org.bukkit.Location;
 import org.bukkit.World;
 import org.slf4j.Logger;
 
@@ -22,6 +21,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * {@link WorldGuardService} backed by WorldGuard 7.0.x, bound to a
@@ -29,28 +29,35 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>This is the only file in the plugin that imports
  * {@code com.sk89q.worldguard.*}; everything else interacts with WG
- * through the {@link WorldGuardService} interface and the
- * {@link ProtectedArenaRegion} record.
+ * through the {@link WorldGuardService} interface and the opaque
+ * {@link ProtectedArenaRegion} handle.
+ *
+ * <p>Each handle is backed by a single WorldGuard region today; the
+ * inner {@link BukkitProtectedArenaRegion} owns the WG region id and
+ * is the only place that knows the id format. Callers cannot read it,
+ * so a future multi-region hardening (inner safe zone + outer no-build
+ * ring, etc.) can replace this class without changing any external
+ * surface.
  *
  * <p>Flags are parsed via WG's own {@link Flag#parseInput(FlagContext)},
  * which means the value strings accepted in {@code arena.flags()} are
  * exactly what WG accepts on the {@code /rg flag} command (for example
  * {@code allow} / {@code deny} for state flags, {@code true} /
  * {@code false} for boolean flags). All flags are applied to the
- * default group only; per-group overrides are out of scope for this
- * service.
+ * default group only; per-group overrides are out of scope.
  */
 public final class BukkitWorldGuardService implements WorldGuardService {
+
+    private static final String REGION_ID_PREFIX = "pvpgames_arena_";
 
     private final World world;
     private final Logger logger;
 
-    /**
-     * Region ids this service still considers open (created but not
-     * yet removed). {@link #shutdown()} clears any leftovers so the
-     * saved region database does not contain ghost regions.
-     */
-    private final Set<String> openRegionIds = ConcurrentHashMap.newKeySet();
+    /** Regions this service still considers open. */
+    private final Set<BukkitProtectedArenaRegion> openRegions = ConcurrentHashMap.newKeySet();
+
+    /** Monotonic counter for the underlying WG region ids. */
+    private final AtomicLong nextRegionId = new AtomicLong(1);
 
     public BukkitWorldGuardService(World world, Logger logger) {
         this.world = Objects.requireNonNull(world, "world");
@@ -61,124 +68,46 @@ public final class BukkitWorldGuardService implements WorldGuardService {
     public World world() { return world; }
 
     @Override
-    public ProtectedArenaRegion createRegion(String regionId, BlockVec3 min, BlockVec3 max)
-            throws WorldGuardException {
-        Objects.requireNonNull(regionId, "regionId");
+    public ProtectedArenaRegion createRegion(BlockVec3 min, BlockVec3 max) throws WorldGuardException {
         Objects.requireNonNull(min, "min");
         Objects.requireNonNull(max, "max");
 
+        String wgId = REGION_ID_PREFIX + nextRegionId.getAndIncrement();
         RegionManager manager = regionManager();
-        if (manager.hasRegion(regionId)) {
-            throw new WorldGuardException("Region '" + regionId + "' already exists in world '"
-                    + world.getName() + "'.");
+        if (manager.hasRegion(wgId)) {
+            // hopefully doesn't happen
+            throw new WorldGuardException("Region id collision: '" + wgId + "'.");
         }
-        ProtectedCuboidRegion region = new ProtectedCuboidRegion(
-                regionId,
+        ProtectedCuboidRegion wgRegion = new ProtectedCuboidRegion(
+                wgId,
                 BlockVector3.at(min.x(), min.y(), min.z()),
                 BlockVector3.at(max.x(), max.y(), max.z()));
-        manager.addRegion(region);
-        openRegionIds.add(regionId);
-        return new ProtectedArenaRegion(world, regionId, min, max);
+        manager.addRegion(wgRegion);
+
+        BukkitProtectedArenaRegion region = new BukkitProtectedArenaRegion(wgId, min, max);
+        openRegions.add(region);
+        return region;
     }
 
     @Override
-    public void removeRegion(String regionId) {
-        Objects.requireNonNull(regionId, "regionId");
-
-        RegionManager manager;
-        try {
-            manager = regionManager();
-        } catch (WorldGuardException ex) {
-            logger.warn("Failed to look up region manager for world '{}': {}",
-                    world.getName(), ex.getMessage());
-            return;
-        }
-        openRegionIds.remove(regionId);
-        if (manager.hasRegion(regionId)) {
-            manager.removeRegion(regionId);
-        }
-    }
-
-    @Override
-    public void applyFlags(ProtectedArenaRegion region, Map<String, String> flags) throws WorldGuardException {
+    public void removeRegion(ProtectedArenaRegion region) {
         Objects.requireNonNull(region, "region");
-        Objects.requireNonNull(flags, "flags");
-        if (flags.isEmpty()) {
+        if (!(region instanceof BukkitProtectedArenaRegion impl)) {
+            // foreign handle from a different WorldGuardService; ignore.
             return;
         }
-
-        RegionManager manager = regionManager();
-        ProtectedRegion wgRegion = manager.getRegion(region.regionId());
-        if (wgRegion == null) {
-            throw new WorldGuardException("Region '" + region.regionId()
-                    + "' was removed before flags could be applied.");
-        }
-        FlagRegistry registry = WorldGuard.getInstance().getFlagRegistry();
-        for (Map.Entry<String, String> entry : flags.entrySet()) {
-            String flagName = entry.getKey();
-            String rawValue = entry.getValue();
-            Flag<?> flag = registry.get(flagName);
-            if (flag == null) {
-                throw new WorldGuardException("Unknown WorldGuard flag '" + flagName + "'.");
-            }
-            applyOneFlag(wgRegion, flag, rawValue);
-        }
-    }
-
-    @Override
-    public boolean contains(String regionId, Location loc) {
-        Objects.requireNonNull(regionId, "regionId");
-        Objects.requireNonNull(loc, "loc");
-        if (!Objects.equals(loc.getWorld(), world)) {
-            return false;
-        }
-        RegionManager manager;
-        try {
-            manager = regionManager();
-        } catch (WorldGuardException ex) {
-            return false;
-        }
-        ProtectedRegion region = manager.getRegion(regionId);
-        if (region == null) {
-            return false;
-        }
-        return region.contains(BlockVector3.at(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ()));
-    }
-
-    /**
-     * Parses {@code rawValue} through {@code flag}'s own parser and stores the
-     * result on the region. The wildcard helper preserves the {@code Flag<T>}
-     * type binding across {@code parseInput} and {@code setFlag}.
-     */
-    private <T> void applyOneFlag(ProtectedRegion region, Flag<T> flag, String rawValue)
-            throws WorldGuardException {
-        try {
-            T value = flag.parseInput(FlagContext.create()
-                    .setInput(rawValue)
-                    .build());
-            region.setFlag(flag, value);
-        } catch (InvalidFlagFormat ex) {
-            throw new WorldGuardException("Invalid value '" + rawValue + "' for flag '"
-                    + flag.getName() + "': " + ex.getMessage(), ex);
-        }
+        impl.deregister();
+        openRegions.remove(impl);
     }
 
     @Override
     public void shutdown() {
-        // Drop any regions the caller did not close cleanly so the
+        // drop any regions the caller did not close cleanly so the
         // saved region database does not keep ghost regions around.
-        for (String id : new HashSet<>(openRegionIds)) {
-            try {
-                RegionManager manager = regionManager();
-                if (manager.hasRegion(id)) {
-                    manager.removeRegion(id);
-                }
-            } catch (WorldGuardException ex) {
-                logger.warn("Failed to remove leftover region '{}' in world '{}' on shutdown: {}",
-                        id, world.getName(), ex.getMessage());
-            }
+        for (BukkitProtectedArenaRegion region : new HashSet<>(openRegions)) {
+            region.deregister();
         }
-        openRegionIds.clear();
+        openRegions.clear();
 
         // Force a synchronous save so in-memory removals land on disk
         // before the world is unloaded.
@@ -208,5 +137,86 @@ public final class BukkitWorldGuardService implements WorldGuardService {
                     + world.getName() + "'.");
         }
         return manager;
+    }
+
+    /**
+     * Parses {@code rawValue} through {@code flag}'s own parser and stores the
+     * result on the region. The wildcard helper preserves the {@code Flag<T>}
+     * type binding across {@code parseInput} and {@code setFlag}.
+     */
+    private <T> void applyOneFlag(ProtectedRegion region, Flag<T> flag, String rawValue)
+            throws WorldGuardException {
+        try {
+            T value = flag.parseInput(FlagContext.create()
+                    .setInput(rawValue)
+                    .build());
+            region.setFlag(flag, value);
+        } catch (InvalidFlagFormat ex) {
+            throw new WorldGuardException("Invalid value '" + rawValue + "' for flag '"
+                    + flag.getName() + "': " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Single-WG-region implementation of {@link ProtectedArenaRegion}.
+     * Lives inside this service so the underlying WG region id is
+     * never exposed to callers.
+     */
+    private final class BukkitProtectedArenaRegion implements ProtectedArenaRegion {
+
+        private final String wgId;
+        private final BlockVec3 min;
+        private final BlockVec3 max;
+
+        BukkitProtectedArenaRegion(String wgId, BlockVec3 min, BlockVec3 max) {
+            this.wgId = wgId;
+            this.min = min;
+            this.max = max;
+        }
+
+        @Override
+        public boolean contains(int x, int y, int z) {
+            return x >= min.x() && x <= max.x()
+                    && y >= min.y() && y <= max.y()
+                    && z >= min.z() && z <= max.z();
+        }
+
+        @Override
+        public void applyFlags(Map<String, String> flags) throws WorldGuardException {
+            Objects.requireNonNull(flags, "flags");
+            if (flags.isEmpty()) {
+                return;
+            }
+
+            RegionManager manager = regionManager();
+            ProtectedRegion wgRegion = manager.getRegion(wgId);
+            if (wgRegion == null) {
+                throw new WorldGuardException("Region '" + wgId
+                        + "' was removed before flags could be applied.");
+            }
+            FlagRegistry registry = WorldGuard.getInstance().getFlagRegistry();
+            for (Map.Entry<String, String> entry : flags.entrySet()) {
+                String flagName = entry.getKey();
+                String rawValue = entry.getValue();
+                Flag<?> flag = registry.get(flagName);
+                if (flag == null) {
+                    throw new WorldGuardException("Unknown WorldGuard flag '" + flagName + "'.");
+                }
+                applyOneFlag(wgRegion, flag, rawValue);
+            }
+        }
+
+        /** Remove the underlying WG region. Called by the enclosing service. */
+        void deregister() {
+            try {
+                RegionManager manager = regionManager();
+                if (manager.hasRegion(wgId)) {
+                    manager.removeRegion(wgId);
+                }
+            } catch (WorldGuardException ex) {
+                logger.warn("Failed to remove region '{}' on world '{}': {}",
+                        wgId, world.getName(), ex.getMessage());
+            }
+        }
     }
 }
