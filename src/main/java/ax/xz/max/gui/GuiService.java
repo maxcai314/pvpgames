@@ -39,11 +39,13 @@ public final class GuiService implements Listener {
     }
 
     void register(Inventory inventory, GuiSession session) {
+        logger.debug("Registering GuiSession {}", System.identityHashCode(session));
         openSessions.put(inventory, session);
     }
 
-    void unregister(Inventory inventory) {
+    void unregister(Inventory inventory, GuiSession session) {
         openSessions.remove(inventory);
+        logger.debug("Unregistered GuiSession {}", System.identityHashCode(session));
     }
 
     @EventHandler
@@ -67,11 +69,12 @@ public final class GuiService implements Listener {
 
     @EventHandler
     public void onClose(InventoryCloseEvent event) {
+        logger.debug("Received inventory close event for player {} (reason={})",
+                event.getPlayer().getName(), event.getReason());
         GuiSession session = openSessions.get(event.getInventory());
         if (session != null) {
-            session.handleClose();
+            logger.debug("Handling inventory close event for GuiSession {}", System.identityHashCode(session));
+            session.handleClose(event.getReason());
         }
-        // todo: what if the player disconnects?
-        // player death?
     }
 }

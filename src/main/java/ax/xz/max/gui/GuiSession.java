@@ -7,6 +7,7 @@ import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.Inventory;
@@ -101,8 +102,13 @@ public abstract class GuiSession {
     /**
      * Returns false to prevent the player from closing the GUI themselves
      * (E key, mouse outside, etc.). The framework re-opens the inventory
-     * on the next tick when this returns false. Has no effect on explicit
-     * {@link #forceClose()} calls; those always go through. Default true.
+     * on the next tick when this returns false.
+     *
+     * <p>Only consulted for player-initiated closes
+     * ({@link InventoryCloseEvent.Reason#PLAYER}). Death, disconnect,
+     * teleport, chunk unload, another plugin closing the inventory, and
+     * explicit {@link #forceClose()} calls all bypass this veto and
+     * unconditionally close the session. Default true.
      */
     protected boolean playerCanClose() { return true; }
 
@@ -188,22 +194,30 @@ public abstract class GuiSession {
 
     /**
      * Internal method called by the listener on {@code InventoryCloseEvent}.
-     * Honors the {@link #playerCanClose()} veto by re-opening on the next tick.
+     * Routes on the event's {@link InventoryCloseEvent.Reason}: only the
+     * player-initiated reason consults {@link #playerCanClose()}; every
+     * other reason (death, disconnect, plugin, teleport, chunk unload,
+     * etc.) finishes the close unconditionally so the session cannot
+     * leak when the player exits in an unusual way.
      */
-    void handleClose() {
+    void handleClose(InventoryCloseEvent.Reason reason) {
         if (closed) return;
-        if (forceClose || playerCanClose()) {
-            // allow the close, clean up
+        if (forceClose) {
+            // our own forceClose() path, regardless of reason.
             finishClose();
             return;
         }
-
-        // otherwise, reopen on next tick
-        scheduler.mainExecutor().execute(() -> {
-            if (!closed && viewer.isOnline()) {
-                viewer.openInventory(inventory);
-            }
-        });
+        if (reason == InventoryCloseEvent.Reason.PLAYER && !playerCanClose()) {
+            // user pressed ESC and the GUI vetoes; reopen on next tick.
+            scheduler.mainExecutor().execute(() -> {
+                if (!closed && viewer.isOnline()) {
+                    viewer.openInventory(inventory);
+                }
+            });
+            return;
+        }
+        // finish closing the session.
+        finishClose();
     }
 
     private void finishClose() {
@@ -221,6 +235,6 @@ public abstract class GuiSession {
             }
         }
         closeCallbacks.clear();
-        guiService.unregister(inventory);
+        guiService.unregister(inventory, this);
     }
 }
