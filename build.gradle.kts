@@ -8,7 +8,6 @@ repositories {
     mavenCentral()
     maven("https://repo.papermc.io/repository/maven-public/")
     maven("https://maven.enginehub.org/repo/")
-    maven("https://repo.onarandombox.com/content/groups/public/")
 }
 
 dependencies {
@@ -22,7 +21,6 @@ dependencies {
     compileOnly("com.sk89q.worldguard:worldguard-core:7.0.13") {
         isTransitive = false
     }
-    compileOnly("org.mvplugins.multiverse.core:multiverse-core:5.6.1")
 }
 
 java {
@@ -43,7 +41,6 @@ tasks {
             // FastAsyncWorldEdit replaces vanilla WorldEdit at runtime
             modrinth("fastasyncworldedit", "2.15.0")
             modrinth("worldguard", "7.0.13")
-            hangar("Multiverse-Core", "5.6.1")
         }
     }
 

@@ -1,47 +1,42 @@
 package ax.xz.max.pvpgames.world;
 
+import ax.xz.max.pvpgames.world.internal.VoidChunkGenerator;
 import org.bukkit.World;
-
-import java.util.Collection;
+import org.bukkit.WorldCreator;
 
 /**
- * Abstraction over a third-party world-management plugin (currently
- * Multiverse-Core). Lets the rest of the plugin ask for void worlds without
- * importing the dependency directly.
+ * Plugin-managed temporary void worlds. Backed by Bukkit's
+ * {@link WorldCreator} and a custom {@link VoidChunkGenerator}, so the
+ * resulting worlds contain no blocks until something (the schematic
+ * service, in our case) writes into them.
  *
- * <p>When the dependency is absent, an {@code UnavailableWorldService} is wired
- * in instead so the rest of the plugin keeps working. Every method on the
- * fallback throws {@link WorldServiceException} with a clear "plugin missing"
- * message.
+ * <p>The plugin owns every world it creates through this interface: each
+ * is created at enable, deleted at disable, and never persists across
+ * server restarts.
+ *
+ * <p>All methods must run on the server main thread.
  */
 public interface WorldService {
 
     /**
-     * Returns the existing {@link World} with the given name if one is loaded,
-     * otherwise creates a new void world (no terrain, no biomes, just air) and
-     * returns it.
+     * Creates a fresh void world named {@code name}. Any pre-existing
+     * loaded world or on-disk directory with the same name is wiped
+     * first, so the returned world is always empty.
      *
-     * @throws WorldServiceException if creation fails or the world manager is
-     *         unavailable
+     * @return the freshly created world
+     * @throws WorldServiceException if Bukkit refuses to create the
+     *         world or a leftover directory cannot be deleted
      */
-    World getOrCreateVoidWorld(String name) throws WorldServiceException;
+    World createVoidWorld(String name) throws WorldServiceException;
 
     /**
-     * Unloads and deletes the named world, including its files on disk.
+     * Unloads {@code world} without saving and deletes its directory on
+     * disk. Calling this with an already-unloaded {@link World} reference
+     * is undefined; the caller should drop the reference after this
+     * returns.
      *
-     * @throws WorldServiceException if the world cannot be removed
+     * @throws WorldServiceException if Bukkit refuses to unload the
+     *         world or the directory cannot be fully removed
      */
-    void deleteWorld(String name) throws WorldServiceException;
-
-    /**
-     * @return {@code true} if a world with this name is currently loaded
-     */
-    boolean worldExists(String name);
-
-    /**
-     * Returns the names of all loaded worlds whose names start with
-     * {@code prefix}. Used to clean up plugin-managed temporary worlds at
-     * enable / disable.
-     */
-    Collection<String> findWorldsByPrefix(String prefix);
+    void deleteWorld(World world) throws WorldServiceException;
 }

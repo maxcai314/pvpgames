@@ -17,9 +17,9 @@ import java.util.Optional;
  *
  * <p>Persistent CRUD ({@link #create}, {@link #delete}, {@link #find},
  * {@link #listNames}) operates against the on-disk arena repository and
- * works whether or not the world / schematic / region dependencies are
- * available; {@link #openSession} requires Multiverse-Core, FAWE, and
- * WorldGuard to all be present and surfaces an {@code Err} otherwise.
+ * works whether or not the schematic / region soft dependencies are
+ * available; {@link #openSession} requires FAWE and WorldGuard to both
+ * be present and surfaces an {@code Err} otherwise.
  *
  * <p>All methods must run on the server main thread.
  * todo: maybe don't export behavior related to ArenaRepository?

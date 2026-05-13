@@ -46,8 +46,8 @@ public final class BukkitWorldGuardService implements WorldGuardService {
      * Worlds whose region manager has been mutated by this service.
      * {@link #shutdown()} forces a save on each so in-memory removals persist
      * to disk before the world is unloaded; without this WorldGuard's
-     * automatic save during world unload runs after Multiverse has already
-     * deleted the world directory.
+     * automatic save during world unload runs after the arenas world has
+     * already been unloaded.
      */
     private final Set<World> touchedWorlds = ConcurrentHashMap.newKeySet();
 

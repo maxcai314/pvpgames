@@ -23,21 +23,16 @@ import ax.xz.max.pvpgames.schematic.SchematicService;
 import ax.xz.max.pvpgames.schematic.UnavailableSchematicService;
 import ax.xz.max.pvpgames.schematic.WorldEditSchematicService;
 import ax.xz.max.async.test.TestAsyncCommand;
-import ax.xz.max.pvpgames.world.MultiverseWorldService;
-import ax.xz.max.pvpgames.world.UnavailableWorldService;
-import ax.xz.max.pvpgames.world.VoidChunkGenerator;
 import ax.xz.max.pvpgames.world.WorldService;
 import ax.xz.max.pvpgames.world.WorldServiceException;
+import ax.xz.max.pvpgames.world.internal.BukkitWorldService;
 import ax.xz.max.pvpgames.worldguard.BukkitWorldGuardService;
 import ax.xz.max.pvpgames.worldguard.UnavailableWorldGuardService;
 import ax.xz.max.pvpgames.worldguard.WorldGuardService;
 import org.bukkit.Server;
 import org.bukkit.World;
-import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -52,12 +47,15 @@ import java.util.List;
  * <p>This is the only place we touch {@link Server} and other Bukkit
  * statics; everything else receives its dependencies through constructors.
  *
- * <p>Soft dependencies (Multiverse-Core, WorldEdit, WorldGuard) are detected
- * at enable; missing ones cause the corresponding service to be wired with
- * its {@code Unavailable*} stub instead of the real implementation. If any
- * of the three is missing, the arena manager is replaced with
- * {@link UnavailableArenaManager}; the shared arenas world is then NOT
- * created because no session can be opened anyway.
+ * <p>Soft dependencies (WorldEdit, WorldGuard) are detected at enable;
+ * missing ones cause the corresponding service to be wired with its
+ * {@code Unavailable*} stub instead of the real implementation. If either
+ * is missing, the arena manager is replaced with
+ * {@link UnavailableArenaManager} and the shared arenas world is not
+ * created because no session can be opened anyway. The arenas world
+ * itself is built directly through {@link WorldService}, which uses
+ * Bukkit's own {@code WorldCreator}; no third-party world-management
+ * plugin is required.
  */
 public final class PvpgamesPlugin extends JavaPlugin {
 
@@ -88,14 +86,12 @@ public final class PvpgamesPlugin extends JavaPlugin {
         this.guiService = new GuiService(this);
 
         PluginManager pm = server.getPluginManager();
-        boolean mvReady = pm.isPluginEnabled("Multiverse-Core");
         // We specifically require FastAsyncWorldEdit for asynchronous pasting
         boolean faweReady = pm.isPluginEnabled("FastAsyncWorldEdit");
         boolean wgReady = pm.isPluginEnabled("WorldGuard");
 
-        this.worldService = mvReady
-                ? new MultiverseWorldService(server, this, getSLF4JLogger())
-                : new UnavailableWorldService();
+        // Bukkit's Server API is always present, so no soft-dep check here.
+        this.worldService = new BukkitWorldService(server, getSLF4JLogger());
 
         Path schematicsDir = getDataFolder().getParentFile().toPath()
                 .resolve("WorldEdit").resolve("schematics");
@@ -130,19 +126,11 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
         this.arenaRepository = new FileArenaRepository(arenasDir, getSLF4JLogger());
 
-        String missingDeps = describeMissingDependencies(mvReady, faweReady, wgReady);
+        String missingDeps = describeMissingDependencies(faweReady, wgReady);
         // todo: ugly pattern. use Optional instead
         if (missingDeps == null) {
-            // todo: abstract this into its own cleanup function
-            // Delete any leftover shared arenas
             try {
-                worldService.deleteWorld(ArenaName.SHARED_WORLD_NAME);
-            } catch (WorldServiceException ex) {
-                getSLF4JLogger().warn("Failed to clean up shared arenas world on enable: {}",
-                        ex.getMessage());
-            }
-            try {
-                this.arenaWorld = worldService.getOrCreateVoidWorld(ArenaName.SHARED_WORLD_NAME);
+                this.arenaWorld = worldService.createVoidWorld(ArenaName.SHARED_WORLD_NAME);
                 this.ownsArenaWorld = true;
             } catch (WorldServiceException ex) {
                 getSLF4JLogger().error("Failed to create shared arenas world; disabling plugin.", ex);
@@ -176,11 +164,6 @@ public final class PvpgamesPlugin extends JavaPlugin {
             getSLF4JLogger().warn("FastAsyncWorldEdit plugin not found; arena schematic features disabled. "
                     + "Vanilla WorldEdit is not sufficient because the schematic paste runs off the main thread.");
         }
-        if (mvReady) {
-            getSLF4JLogger().info("Multiverse-Core plugin found; shared arenas world enabled.");
-        } else {
-            getSLF4JLogger().warn("Multiverse-Core plugin not found; shared arenas world disabled.");
-        }
         if (wgReady) {
             getSLF4JLogger().info("WorldGuard plugin found; arena region enforcement enabled.");
         } else {
@@ -193,18 +176,17 @@ public final class PvpgamesPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Restore every cached pre-session player state and close every
-        // session BEFORE the shared world is deleted. Multiverse, WorldEdit,
-        // and WorldGuard load before us (softdepend) and disable after us, so
-        // their APIs are still alive here.
+        // restore player state before deleting worlds
         if (arenaManager != null) {
             arenaManager.shutdown();
         }
-        if (ownsArenaWorld && worldService != null && worldGuardService != null) {
+
+        // delete world
+        if (ownsArenaWorld && arenaWorld != null && worldService != null && worldGuardService != null) {
             try {
                 getSLF4JLogger().info("Deleting world {}", ArenaName.SHARED_WORLD_NAME);
                 worldGuardService.shutdown();
-                worldService.deleteWorld(ArenaName.SHARED_WORLD_NAME);
+                worldService.deleteWorld(arenaWorld);
             } catch (WorldServiceException ex) {
                 getSLF4JLogger().warn("Failed to delete shared arenas world on disable: {}", ex.getMessage());
             }
@@ -212,24 +194,11 @@ public final class PvpgamesPlugin extends JavaPlugin {
     }
 
     /**
-     * Paper / Bukkit asks the plugin for a {@link ChunkGenerator} when a world
-     * is created with {@code generator: <plugin-name>}.
-     * {@link MultiverseWorldService} passes our plugin name when creating the
-     * shared arenas world, so this routes Multiverse to the
-     * {@link VoidChunkGenerator} that produces empty void worlds.
-     */
-    @Override
-    public @Nullable ChunkGenerator getDefaultWorldGenerator(@NotNull String worldName, @Nullable String id) {
-        return new VoidChunkGenerator();
-    }
-
-    /**
      * @return human-readable list of missing soft-dependencies, or
      *         {@code null} when all are present
      */
-    private static String describeMissingDependencies(boolean mvReady, boolean faweReady, boolean wgReady) {
-        List<String> missing = new ArrayList<>(3);
-        if (!mvReady) missing.add("Multiverse-Core");
+    private static String describeMissingDependencies(boolean faweReady, boolean wgReady) {
+        List<String> missing = new ArrayList<>(2);
         if (!faweReady) missing.add("FastAsyncWorldEdit");
         if (!wgReady) missing.add("WorldGuard");
         if (missing.isEmpty()) return null;

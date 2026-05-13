@@ -17,9 +17,9 @@ import java.util.Objects;
 public record ArenaName(String value) {
 
     /**
-     * Name of the single Multiverse world that hosts every active arena
-     * session under the rewritten architecture. Created at plugin enable and
-     * deleted at plugin disable; sessions are pasted into this world at
+     * Name of the shared Bukkit-managed void world that hosts every
+     * active arena session. Created at plugin enable and deleted at
+     * plugin disable; sessions are pasted into this world at
      * non-overlapping origins handed out by the arena allocator.
      */
     public static final String SHARED_WORLD_NAME = "pvpgames_arenas";
