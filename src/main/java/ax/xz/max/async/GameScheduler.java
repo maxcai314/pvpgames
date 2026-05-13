@@ -9,11 +9,16 @@ import org.slf4j.Logger;
  * as well as an async executor, which runs commands on a background thread.
  */
 public class GameScheduler {
-//    private final Logger logger; // todo
+    private final Logger logger;
     private final Plugin plugin;
 
     public GameScheduler(Plugin plugin) {
         this.plugin = plugin;
+        this.logger = plugin.getSLF4JLogger();
+    }
+
+    public Logger logger() {
+        return this.logger;
     }
 
     /**
