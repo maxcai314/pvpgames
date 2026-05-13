@@ -8,7 +8,6 @@ import ax.xz.max.pvpgames.arena.ArenaManager;
 import ax.xz.max.pvpgames.arena.ArenaName;
 import ax.xz.max.pvpgames.arena.ArenaRepository;
 import ax.xz.max.pvpgames.arena.command.ArenaCommand;
-import ax.xz.max.pvpgames.arena.internal.ArenaSessionListener;
 import ax.xz.max.pvpgames.arena.internal.ArenaAllocator;
 import ax.xz.max.pvpgames.arena.internal.DefaultArenaManager;
 import ax.xz.max.pvpgames.arena.internal.PlayerStateCache;
@@ -40,6 +39,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Plugin entry point.
@@ -130,25 +130,15 @@ public final class PvpgamesPlugin extends JavaPlugin {
         // todo: ugly pattern. use Optional instead
         if (missingDeps == null) {
             try {
-                this.arenaWorld = worldService.createVoidWorld(ArenaName.SHARED_WORLD_NAME);
-                this.ownsArenaWorld = true;
+                this.arenaManager = createArenaManager();
             } catch (WorldServiceException ex) {
                 getSLF4JLogger().error("Failed to create shared arenas world; disabling plugin.", ex);
                 server.getPluginManager().disablePlugin(this);
                 return;
             }
-            ArenaAllocator allocator = new ArenaAllocator(arenaWorld);
-            PlayerStateCache stateCache = new PlayerStateCache(server, this);
-            this.arenaManager = new DefaultArenaManager(
-                    arenaRepository, schematicService, worldGuardService,
-                    allocator, stateCache, arenaWorld,
-                    server, gameScheduler, Clock.systemUTC(), getSLF4JLogger());
         } else {
             this.arenaManager = new UnavailableArenaManager(arenaRepository, Clock.systemUTC(), missingDeps);
         }
-
-        // register listeners
-        server.getPluginManager().registerEvents(new ArenaSessionListener(arenaManager), this);
 
         // register commands
         new KitCommand(kitService, server).register(getLifecycleManager());
@@ -203,6 +193,18 @@ public final class PvpgamesPlugin extends JavaPlugin {
         if (!wgReady) missing.add("WorldGuard");
         if (missing.isEmpty()) return null;
         return "Dependencies [" + String.join(", ", missing) + "] are not installed.";
+    }
+
+    /** assumes that many dependencies are initialized */
+    private ArenaManager createArenaManager() throws WorldServiceException {
+        this.arenaWorld = this.worldService.createVoidWorld(ArenaName.SHARED_WORLD_NAME);
+        this.ownsArenaWorld = true;
+        ArenaAllocator allocator = new ArenaAllocator(this.arenaWorld);
+        PlayerStateCache stateCache = new PlayerStateCache(this.getServer(), this);
+        return new DefaultArenaManager(
+                this.arenaRepository, this.schematicService, this.worldGuardService,
+                allocator, stateCache, this.arenaWorld,
+                this, this.gameScheduler, Clock.systemUTC(), getSLF4JLogger());
     }
 
     public KitService kitService() {

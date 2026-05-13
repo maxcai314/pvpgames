@@ -12,20 +12,21 @@ import org.slf4j.Logger;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 
 /**
- * Single global Bukkit listener that routes inventory events to the
+ * Single global Bukkit service that routes inventory events to the
  * {@link GuiSession} they affect. Pure routing: this class does NOT cancel
  * events, enforce invariants, or otherwise interpret what events mean.
  * Each session's hook ({@link GuiSession#onClick}, {@link GuiSession#onDrag},
  * {@link GuiSession#onSwap}) decides for itself whether to cancel or allow.
  *
+ * <p>Internally registers a listener that is owned by this object.
+ *
  * <p>Sessions register themselves on {@link GuiSession#open()} via the
  * package-private {@link #register} / {@link #unregister} pair. Routing is
  * keyed on the top inventory of the open view.
  */
-public final class GuiService implements Listener {
+public final class GuiService {
 
     final Logger logger;
 
@@ -33,9 +34,11 @@ public final class GuiService implements Listener {
     private final Map<Inventory, GuiSession> openSessions = new HashMap<>();
 
     public GuiService(Plugin plugin) {
-        Objects.requireNonNull(plugin, "plugin");
-        plugin.getServer().getPluginManager().registerEvents(this, plugin);
         this.logger = plugin.getSLF4JLogger();
+
+        GuiServiceListener listener = new GuiServiceListener();
+        this.logger.info("Registering event listener for GuiServiceListener");
+        plugin.getServer().getPluginManager().registerEvents(listener, plugin);
     }
 
     void register(Inventory inventory, GuiSession session) {
@@ -48,33 +51,37 @@ public final class GuiService implements Listener {
         logger.debug("Unregistered GuiSession {}", System.identityHashCode(session));
     }
 
-    @EventHandler
-    public void onClick(InventoryClickEvent event) {
-        GuiSession session = openSessions.get(event.getView().getTopInventory());
-        if (session != null) session.dispatchClick(event);
-    }
+    /** listener used by this GuiService */
+    private class GuiServiceListener implements Listener {
 
-    @EventHandler
-    public void onDrag(InventoryDragEvent event) {
-        GuiSession session = openSessions.get(event.getView().getTopInventory());
-        if (session != null) session.dispatchDrag(event);
-    }
+        @EventHandler
+        public void onClick(InventoryClickEvent event) {
+            GuiSession session = openSessions.get(event.getView().getTopInventory());
+            if (session != null) session.dispatchClick(event);
+        }
 
-    @EventHandler
-    public void onSwap(PlayerSwapHandItemsEvent event) {
-        Inventory top = event.getPlayer().getOpenInventory().getTopInventory();
-        GuiSession session = openSessions.get(top);
-        if (session != null) session.dispatchSwap(event);
-    }
+        @EventHandler
+        public void onDrag(InventoryDragEvent event) {
+            GuiSession session = openSessions.get(event.getView().getTopInventory());
+            if (session != null) session.dispatchDrag(event);
+        }
 
-    @EventHandler
-    public void onClose(InventoryCloseEvent event) {
-        logger.debug("Received inventory close event for player {} (reason={})",
-                event.getPlayer().getName(), event.getReason());
-        GuiSession session = openSessions.get(event.getInventory());
-        if (session != null) {
-            logger.debug("Handling inventory close event for GuiSession {}", System.identityHashCode(session));
-            session.handleClose(event.getReason());
+        @EventHandler
+        public void onSwap(PlayerSwapHandItemsEvent event) {
+            Inventory top = event.getPlayer().getOpenInventory().getTopInventory();
+            GuiSession session = openSessions.get(top);
+            if (session != null) session.dispatchSwap(event);
+        }
+
+        @EventHandler
+        public void onClose(InventoryCloseEvent event) {
+            logger.debug("Received inventory close event for player {} (reason={})",
+                    event.getPlayer().getName(), event.getReason());
+            GuiSession session = openSessions.get(event.getInventory());
+            if (session != null) {
+                logger.debug("Handling inventory close event for GuiSession {}", System.identityHashCode(session));
+                session.handleClose(event.getReason());
+            }
         }
     }
 }

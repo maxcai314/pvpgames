@@ -22,6 +22,10 @@ import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.plugin.Plugin;
 import org.slf4j.Logger;
 
 import java.time.Clock;
@@ -82,7 +86,7 @@ public final class DefaultArenaManager implements ArenaManager {
             ArenaAllocator allocator,
             PlayerStateCache playerStateCache,
             World arenaWorld,
-            Server server,
+            Plugin plugin,
             GameScheduler scheduler,
             Clock clock,
             Logger logger) {
@@ -92,10 +96,25 @@ public final class DefaultArenaManager implements ArenaManager {
         this.allocator = Objects.requireNonNull(allocator, "allocator");
         this.playerStateCache = Objects.requireNonNull(playerStateCache, "playerStateCache");
         this.arenaWorld = Objects.requireNonNull(arenaWorld, "arenaWorld");
-        this.server = Objects.requireNonNull(server, "server");
+        this.server = plugin.getServer();
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.logger = Objects.requireNonNull(logger, "logger");
+
+        ArenaManagerListener listener = new ArenaManagerListener();
+        this.logger.info("Registering event listener for DefaultArenaManager");
+        this.server.getPluginManager().registerEvents(listener, plugin);
+    }
+
+    /** listener used by this ArenaManager */
+    private class ArenaManagerListener implements Listener {
+        @EventHandler
+        public void onPlayerQuit(PlayerQuitEvent event) {
+            Player player = event.getPlayer();
+            Optional<ArenaSession> session = DefaultArenaManager.this.findSessionFor(player);
+            // return the player to their original position
+            session.ifPresent(s -> s.leavePlayer(player));
+        }
     }
 
     // ---- persistent CRUD ----------------------------------------------
@@ -170,7 +189,7 @@ public final class DefaultArenaManager implements ArenaManager {
         GameExecutor main = scheduler.mainExecutor();
 
         // prelude (main) -> paste (async, run by SchematicService) -> finalize (main).
-        return Promise.supplyAsync(() -> prepareOpen(rawArenaName), main)
+        return (Promise<Result<ArenaSession, String>>) Promise.supplyAsync(() -> prepareOpen(rawArenaName), main)
                 .thenComposeAsync(prelude -> switch (prelude) {
                     case Result.Err<Prelude, String>(String err) ->
                             Promise.<Result<ArenaSession, String>>completedFuture(new Result.Err<>(err));
